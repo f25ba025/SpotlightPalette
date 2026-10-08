@@ -4,6 +4,591 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>スポットライトパレット - 管理者ダッシュボード</title>
+
+    <!-- Supabase JS SDK の読み込み -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+      var SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
+      var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
+      
+      var supabaseClient = null;
+      try {
+          if (window.supabase) {
+              supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+          } else {
+              console.error("Supabaseライブラリが読み込まれていません");
+          }
+      } catch (e) {
+          console.error("Supabase初期化エラー:", e);
+      }
+
+      let appData = {
+          factories: [],
+          users: [],
+          areas: [],
+          schedules: {},
+          logs: []
+      };
+      let currentUser = null;
+      let currentFactoryId = "";
+      let selectedAreaId = null;
+      let isEditMode = false;
+      let isDrawing = false;
+      let startXPercent, startYPercent, activeDrawingSvg = null;
+
+      async function init() {
+          const savedUser = localStorage.getItem('spotlight_admin_user');
+          if (savedUser) {
+              currentUser = JSON.parse(savedUser);
+              document.getElementById('login-modal').style.display = 'none';
+          }
+
+          await loadFromSupabase();
+          
+          if (appData.factories && appData.factories.length > 0) {
+              currentFactoryId = appData.factories[0].id;
+          }
+
+          if (currentUser) {
+              setupDashboard();
+          }
+      }
+
+      // 🔑 ログイン処理 (Supabase usersテーブル照合)
+      async function handleLogin() {
+          const emailInput = document.getElementById('login-email-input').value.trim();
+          const errorMsg = document.getElementById('login-error-msg');
+          const submitBtn = document.getElementById('login-submit-btn');
+
+          if (!emailInput) {
+              errorMsg.innerText = "メールアドレスを入力してください。";
+              errorMsg.style.display = "block";
+              return;
+          }
+
+          if (!supabaseClient) {
+              errorMsg.innerText = "データベースに接続されていません。";
+              errorMsg.style.display = "block";
+              return;
+          }
+
+          submitBtn.innerText = "照合中...";
+          errorMsg.style.display = "none";
+
+          try {
+              const { data, error } = await supabaseClient
+                  .from('users')
+                  .select('*')
+                  .eq('email', emailInput)
+                  .maybeSingle();
+
+              if (error) throw error;
+
+              if (data) {
+                  if (data.role !== "admin") {
+                      errorMsg.innerText = "アクセスエラー：管理者権限（admin）がありません。";
+                      errorMsg.style.display = "block";
+                      return;
+                  }
+
+                  currentUser = data;
+                  localStorage.setItem('spotlight_admin_user', JSON.stringify(currentUser));
+                  document.getElementById('login-modal').style.display = 'none';
+                  
+                  await loadFromSupabase();
+                  setupDashboard();
+              } else {
+                  errorMsg.innerText = "登録されていないメールアドレスです。";
+                  errorMsg.style.display = "block";
+              }
+          } catch (e) {
+              console.error("ログインエラー:", e);
+              errorMsg.innerText = "通信エラーが発生しました。";
+              errorMsg.style.display = "block";
+          } finally {
+              submitBtn.innerText = "ログイン";
+          }
+      }
+
+      // 🚪 ログアウト処理
+      function handleLogout() {
+          if (!confirm("ログアウトしますか？")) return;
+          localStorage.removeItem('spotlight_admin_user');
+          currentUser = null;
+          document.getElementById('login-modal').style.display = 'flex';
+          document.getElementById('login-email-input').value = '';
+          document.getElementById('login-user-disp').innerText = "ログインしていません";
+      }
+
+      function setupDashboard() {
+          if (currentUser) {
+              document.getElementById('login-user-disp').innerText = `${currentUser.name} (${currentUser.role})`;
+              document.getElementById('account-info-detail').innerHTML = `
+                  <strong>名前:</strong> ${currentUser.name}<br>
+                  <strong>ID:</strong> ${currentUser.id || '-'}<br>
+                  <strong>Email:</strong> ${currentUser.email}<br>
+                  <strong>権限:</strong> <span class="badge badge-admin">管理者 (admin)</span>
+              `;
+          }
+
+          if (appData.factories && appData.factories.length > 0 && !appData.factories.some(f => f.id === currentFactoryId)) {
+              currentFactoryId = appData.factories[0].id;
+          }
+          renderTabs(); 
+          renderCanvas(); 
+          renderAreaListView(); 
+          renderScheduleTable(); 
+          renderUsersTable();
+          renderRankingsAndLogs(); 
+          setupCanvasDrawing();
+      }
+
+      // Supabaseから全データを一括取得
+      async function loadFromSupabase() {
+          if (!supabaseClient) return;
+          try {
+              const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
+                  supabaseClient.from('users').select('*'),
+                  supabaseClient.from('factories').select('*'),
+                  supabaseClient.from('areas').select('*'),
+                  supabaseClient.from('schedules').select('*'),
+                  supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(50)
+              ]);
+
+              appData.users = resUsers.data || [];
+              appData.factories = resFactories.data || [];
+              
+              appData.areas = (resAreas.data || []).map(a => ({
+                  ...a,
+                  factoryId: a.factory_id
+              }));
+
+              appData.schedules = {};
+              (resSchedules.data || []).forEach(s => {
+                  appData.schedules[s.area_id] = {
+                      Mon: s.mon || "",
+                      Tue: s.tue || "",
+                      Wed: s.wed || "",
+                      Thu: s.thu || "",
+                      Fri: s.fri || ""
+                  };
+              });
+
+              appData.logs = resLogs.data || [];
+          } catch (e) {
+              console.error("データ取得エラー:", e);
+          }
+      }
+
+      // 背景画像のアップロード（SupabaseのfactoriesテーブルのimageカラムにBase64保存）
+      async function handleImageUpload(input) {
+          const file = input.files[0];
+          if (!file) return;
+
+          const reader = new FileReader();
+          reader.onload = async function(e) {
+              const base64Data = e.target.result;
+              const btnLabel = input.parentElement;
+              const originalText = btnLabel.innerText;
+              btnLabel.innerText = "⏳ データベースへ保存中...";
+
+              try {
+                  const { error } = await supabaseClient
+                      .from('factories')
+                      .update({ image: base64Data })
+                      .eq('id', currentFactoryId);
+
+                  if (!error) {
+                      const factory = appData.factories.find(f => f.id === currentFactoryId);
+                      if (factory) factory.image = base64Data;
+                      renderCanvas();
+                      alert("背景画像が保存されました！");
+                  } else {
+                      alert("保存に失敗しました: " + error.message);
+                  }
+              } catch (err) {
+                  console.error("画像アップロードエラー:", err);
+                  alert("送信エラーが発生しました。");
+              } finally {
+                  btnLabel.innerText = originalText;
+              }
+          };
+          reader.readAsDataURL(file);
+      }
+
+      function switchPcPage(pageId) {
+          document.querySelectorAll('.pc-content').forEach(p => p.classList.remove('active'));
+          document.querySelectorAll('.pc-nav-item').forEach(n => n.classList.remove('active'));
+          document.getElementById('p-pc-' + pageId).classList.add('active');
+          const activeNav = document.getElementById('t-pc-' + pageId);
+          activeNav.classList.add('active');
+          document.getElementById('page-title').innerText = activeNav.innerText;
+
+          if (pageId === 'users') renderUsersTable();
+          if (pageId === 'schedule') renderScheduleTable();
+          if (pageId === 'rank') renderRankingsAndLogs();
+      }
+
+      function toggleEditMode() {
+          isEditMode = !isEditMode;
+          const btn = document.getElementById('mode-toggle-btn');
+          const editControls = document.getElementById('edit-controls');
+          const canvas = document.getElementById('map-canvas');
+          document.getElementById('view-side-card').style.display = isEditMode ? "none" : "block";
+          document.getElementById('edit-side-card').style.display = isEditMode ? "block" : "none";
+          
+          if (isEditMode) {
+              btn.innerText = "👁️ 通常閲覧モードに戻す"; btn.className = "btn btn-secondary"; editControls.style.display = "block"; canvas.classList.add('edit-mode');
+          } else {
+              btn.innerText = "🛠️ マップ編集モードに切り替える"; btn.className = "btn"; editControls.style.display = "none"; canvas.classList.remove('edit-mode'); selectedAreaId = null;
+          }
+          renderCanvas();
+      }
+
+      function renderCanvas() {
+          const canvas = document.getElementById('map-canvas');
+          const svgLayer = document.getElementById('map-svg-layer');
+          const interactorContainer = document.getElementById('interactor-container');
+          
+          svgLayer.innerHTML = ''; interactorContainer.innerHTML = '';
+          
+          const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
+          if (currentFac && currentFac.image) {
+              canvas.style.backgroundImage = `url('${currentFac.image}')`;
+          } else {
+              canvas.style.backgroundImage = "none";
+          }
+
+          const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
+          filtered.forEach(area => {
+              let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+              shape.setAttribute("x", area.x + "%");
+              shape.setAttribute("y", area.y + "%");
+              shape.setAttribute("width", area.w + "%");
+              shape.setAttribute("height", area.h + "%");
+
+              const isCleaned = area.status === 'cleaned';
+              shape.setAttribute("fill", isCleaned ? "rgba(16, 124, 65, 0.35)" : "rgba(216, 59, 1, 0.35)");
+              shape.setAttribute("stroke", isCleaned ? "var(--success)" : "var(--accent)");
+              shape.setAttribute("stroke-width", area.id === selectedAreaId ? "3" : "1.5");
+              svgLayer.appendChild(shape);
+
+              const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+              text.setAttribute("x", (area.x + (area.w / 2)) + "%");
+              text.setAttribute("y", (area.y + (area.h / 2)) + "%");
+              text.setAttribute("text-anchor", "middle");
+              text.setAttribute("dominant-baseline", "central");
+              text.setAttribute("font-size", "11px");
+              text.setAttribute("font-weight", "bold");
+              text.setAttribute("fill", "#000");
+              text.textContent = area.name;
+              svgLayer.appendChild(text);
+
+              const interactor = document.createElement('div');
+              interactor.className = `area-interactor ${isEditMode ? 'mode-edit' : ''} ${area.id === selectedAreaId ? 'edit-active' : ''}`;
+              interactor.style.left = area.x + '%';
+              interactor.style.top = area.y + '%';
+              interactor.style.width = area.w + '%';
+              interactor.style.height = area.h + '%';
+
+              if (isEditMode) {
+                  const handle = document.createElement('div');
+                  handle.className = 'resize-handle';
+                  handle.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); initResize(e, area); });
+                  interactor.appendChild(handle);
+              }
+
+              interactor.addEventListener('mousedown', (e) => {
+                  if (!isEditMode) return;
+                  e.stopPropagation(); selectArea(area.id); initDragMove(e, area);
+              });
+
+              interactorContainer.appendChild(interactor);
+          });
+      }
+
+      function renderTabs() {
+          const container = document.getElementById('factory-tabs-container');
+          container.innerHTML = '';
+          (appData.factories || []).forEach(f => {
+              const btn = document.createElement('button');
+              btn.className = `tab-btn ${f.id === currentFactoryId ? 'active' : ''}`;
+              btn.innerText = f.name;
+              btn.onclick = async () => {
+                  currentFactoryId = f.id; selectedAreaId = null;
+                  document.getElementById('property-form').style.display = 'none';
+                  document.getElementById('no-select-hint').style.display = 'block';
+                  await loadFromSupabase();
+                  renderTabs(); renderCanvas(); renderAreaListView();
+              };
+              container.appendChild(btn);
+          });
+      }
+
+      async function addNewFactory() {
+          const count = (appData.factories || []).length + 1;
+          const name = "第" + count + "工場";
+          const id = "fac_" + Date.now();
+          
+          const newFac = { id: id, name: name, image: "" };
+          const { error } = await supabaseClient.from('factories').insert([newFac]);
+          if (!error) {
+              if (!appData.factories) appData.factories = [];
+              appData.factories.push(newFac);
+              currentFactoryId = id; 
+              renderTabs(); renderCanvas();
+          } else {
+              alert("工場の追加に失敗しました: " + error.message);
+          }
+      }
+
+      async function deleteCurrentFactory() {
+          if ((appData.factories || []).length <= 1) return alert("これ以上削除できません。");
+          if (!confirm("この大枠と、含まれる清掃区画をすべて削除しますか？")) return;
+          
+          await supabaseClient.from('areas').delete().eq('factory_id', currentFactoryId);
+          await supabaseClient.from('factories').delete().eq('id', currentFactoryId);
+
+          appData.areas = (appData.areas || []).filter(a => a.factoryId !== currentFactoryId);
+          appData.factories = appData.factories.filter(f => f.id !== currentFactoryId);
+          currentFactoryId = appData.factories[0].id; selectedAreaId = null;
+          renderTabs(); renderCanvas(); renderAreaListView(); renderScheduleTable();
+      }
+
+      function setupCanvasDrawing() {
+          const canvas = document.getElementById('map-canvas');
+          canvas.addEventListener('mousedown', (e) => {
+              if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer')) return;
+              isDrawing = true;
+              const rect = canvas.getBoundingClientRect();
+              startXPercent = ((e.clientX - rect.left) / rect.width) * 100;
+              startYPercent = ((e.clientY - rect.top) / rect.height) * 100;
+              
+              activeDrawingSvg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+              activeDrawingSvg.setAttribute("fill", "rgba(216, 59, 1, 0.35)");
+              activeDrawingSvg.setAttribute("stroke", "var(--accent)");
+              activeDrawingSvg.setAttribute("stroke-dasharray", "4");
+              activeDrawingSvg.setAttribute("x", startXPercent + "%");
+              activeDrawingSvg.setAttribute("y", startYPercent + "%");
+              document.getElementById('map-svg-layer').appendChild(activeDrawingSvg);
+          });
+
+          window.addEventListener('mousemove', (e) => {
+              if (!isDrawing) return;
+              const rect = canvas.getBoundingClientRect();
+              const currentXPercent = Math.max(0, Math.min(((e.clientX - rect.left) / rect.width) * 100, 100));
+              const currentYPercent = Math.max(0, Math.min(((e.clientY - rect.top) / rect.height) * 100, 100));
+              
+              const x = Math.min(startXPercent, currentXPercent);
+              const y = Math.min(startYPercent, currentYPercent);
+              const w = Math.abs(startXPercent - currentXPercent);
+              const h = Math.abs(startYPercent - currentYPercent);
+              
+              activeDrawingSvg.setAttribute("x", x + "%"); activeDrawingSvg.setAttribute("y", y + "%");
+              activeDrawingSvg.setAttribute("width", w + "%"); activeDrawingSvg.setAttribute("height", h + "%");
+          });
+
+          window.addEventListener('mouseup', async () => {
+              if (!isDrawing) return;
+              isDrawing = false;
+              
+              const x = parseFloat(activeDrawingSvg.getAttribute("x"));
+              const y = parseFloat(activeDrawingSvg.getAttribute("y"));
+              const w = parseFloat(activeDrawingSvg.getAttribute("width")) || 0;
+              const h = parseFloat(activeDrawingSvg.getAttribute("height")) || 0;
+              
+              if (w > 2 && h > 2) {
+                  const newId = "room_" + Date.now();
+                  const newArea = {
+                      id: newId,
+                      factory_id: currentFactoryId,
+                      name: "新規清掃区画",
+                      type: "rect",
+                      x: x,
+                      y: y,
+                      w: w,
+                      h: h,
+                      points: [],
+                      status: "not-cleaned"
+                  };
+                  
+                  await supabaseClient.from('areas').insert([newArea]);
+                  await supabaseClient.from('schedules').insert([{ area_id: newId, mon: "", tue: "", wed: "", thu: "", fri: "" }]);
+
+                  if (!appData.areas) appData.areas = [];
+                  appData.areas.push({ ...newArea, factoryId: currentFactoryId });
+                  if (!appData.schedules) appData.schedules = {};
+                  appData.schedules[newId] = { Mon: "", Tue: "", Wed: "", Thu: "", Fri: "" };
+
+                  selectArea(newId);
+              }
+              if (activeDrawingSvg) activeDrawingSvg.remove();
+              activeDrawingSvg = null;
+              renderCanvas(); renderAreaListView(); renderScheduleTable();
+          });
+      }
+
+      function initDragMove(e, area) {
+          const canvas = document.getElementById('map-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
+          const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
+          const startAreaX = area.x, startAreaY = area.y;
+
+          function onMouseMove(mEvent) {
+              const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
+              const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
+              area.x = Math.max(0, Math.min(startAreaX + (currentMouseXPercent - startMouseXPercent), 100 - area.w));
+              area.y = Math.max(0, Math.min(startAreaY + (currentMouseYPercent - startMouseYPercent), 100 - area.h));
+              renderCanvas();
+          }
+
+          async function onMouseUp() {
+              window.removeEventListener('mousemove', onMouseMove);
+              window.removeEventListener('mouseup', onMouseUp);
+              await supabaseClient.from('areas').update({ x: area.x, y: area.y }).eq('id', area.id);
+              renderCanvas();
+          }
+          window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
+      }
+
+      function initResize(e, area) {
+          const canvas = document.getElementById('map-canvas');
+          const rect = canvas.getBoundingClientRect();
+          const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
+          const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
+          const startW = area.w, startH = area.h;
+
+          function onMouseMove(mEvent) {
+              const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
+              const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
+              area.w = Math.max(2, Math.min(startW + (currentMouseXPercent - startMouseXPercent), 100 - area.x));
+              area.h = Math.max(2, Math.min(startH + (currentMouseYPercent - startMouseYPercent), 100 - area.y));
+              renderCanvas();
+          }
+
+          async function onMouseUp() {
+              window.removeEventListener('mousemove', onMouseMove);
+              window.removeEventListener('mouseup', onMouseUp);
+              await supabaseClient.from('areas').update({ w: area.w, h: area.h }).eq('id', area.id);
+              renderCanvas();
+          }
+          window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
+      }
+
+      function selectArea(id) {
+          selectedAreaId = id; const area = (appData.areas || []).find(a => a.id === id); if (!area) return;
+          document.getElementById('no-select-hint').style.display = 'none'; document.getElementById('property-form').style.display = 'block';
+          document.getElementById('prop-name').value = area.name; document.getElementById('prop-status').value = area.status; renderCanvas();
+      }
+
+      async function updateAreaName(val) { 
+          if (selectedAreaId) { 
+              appData.areas.find(a => a.id === selectedAreaId).name = val; 
+              await supabaseClient.from('areas').update({ name: val }).eq('id', selectedAreaId);
+              renderCanvas(); renderAreaListView(); renderScheduleTable(); 
+          } 
+      }
+      
+      async function updateAreaStatus(val) { 
+          if (selectedAreaId) { 
+              appData.areas.find(a => a.id === selectedAreaId).status = val; 
+              await supabaseClient.from('areas').update({ status: val }).eq('id', selectedAreaId);
+              renderCanvas(); renderAreaListView(); 
+          } 
+      }
+      
+      async function deleteSelectedArea() {
+          if (!selectedAreaId || !confirm("削除しますか？")) return;
+          await supabaseClient.from('areas').delete().eq('id', selectedAreaId);
+          await supabaseClient.from('schedules').delete().eq('area_id', selectedAreaId);
+
+          appData.areas = appData.areas.filter(a => a.id !== selectedAreaId); 
+          if (appData.schedules) delete appData.schedules[selectedAreaId];
+          selectedAreaId = null; document.getElementById('property-form').style.display = 'none'; document.getElementById('no-select-hint').style.display = 'block';
+          renderCanvas(); renderAreaListView(); renderScheduleTable();
+      }
+
+      function renderAreaListView() {
+          const ul = document.getElementById('pc-area-list-view'); ul.innerHTML = '';
+          const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
+          if (filtered.length === 0) { ul.innerHTML = "<li style='color:#999; font-size:12px;'>登録エリアはありません。</li>"; return; }
+          filtered.forEach(area => { const li = document.createElement('li'); li.innerHTML = `・${area.name} (${area.status === 'cleaned' ? '<span style="color:green;">🟢完了</span>' : '<span style="color:orange;">🔴未清掃</span>'})`; ul.appendChild(li); });
+      }
+
+      function renderScheduleTable() {
+          const tbody = document.getElementById('schedule-table-body'); tbody.innerHTML = '';
+          (appData.areas || []).forEach(area => {
+              const fac = (appData.factories || []).find(f => f.id === area.factoryId);
+              const tr = document.createElement('tr');
+              const tdLabel = document.createElement('td'); tdLabel.innerHTML = `<strong>${area.name}</strong> <span style="font-size:11px; color:#777;">(${fac?fac.name:"?"})</span>`; tr.appendChild(tdLabel);
+              
+              ["Mon", "Tue", "Wed", "Thu", "Fri"].forEach(day => {
+                  const td = document.createElement('td'); const select = document.createElement('select'); select.className = 'form-control';
+                  const optEmpty = document.createElement('option'); optEmpty.value = ""; optEmpty.innerText = "- 未設定 -"; select.appendChild(optEmpty);
+                  
+                  (appData.users || []).forEach(u => { 
+                      const opt = document.createElement('option'); opt.value = u.id; opt.innerText = u.name; 
+                      if (appData.schedules?.[area.id]?.[day] === u.id) opt.selected = true; 
+                      select.appendChild(opt); 
+                  });
+                  
+                  select.onchange = async (e) => { 
+                      if (!appData.schedules) appData.schedules = {}; 
+                      if (!appData.schedules[area.id]) appData.schedules[area.id] = {}; 
+                      appData.schedules[area.id][day] = e.target.value; 
+
+                      const dbColumn = day.toLowerCase(); // mon, tue, wed, thu, fri
+                      await supabaseClient.from('schedules').update({ [dbColumn]: e.target.value }).eq('area_id', area.id);
+                  };
+                  td.appendChild(select); tr.appendChild(td);
+              });
+              tbody.appendChild(tr);
+          });
+      }
+
+      function renderUsersTable() {
+          const tbody = document.getElementById('users-table-body');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+
+          if (!appData.users || appData.users.length === 0) {
+              tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999;">ユーザーデータが取得されていません。</td></tr>';
+              return;
+          }
+
+          appData.users.forEach(u => {
+              const tr = document.createElement('tr');
+              const roleBadge = u.role === 'admin' 
+                  ? '<span class="badge badge-admin">管理者 (admin)</span>' 
+                  : '<span class="badge badge-worker">作業者 (worker)</span>';
+
+              tr.innerHTML = `
+                  <td><code>${u.id || '-'}</code></td>
+                  <td><strong>${u.name || '-'}</strong></td>
+                  <td>${u.email || '-'}</td>
+                  <td>${roleBadge}</td>
+                  <td><strong>${(Number(u.score) || 0).toLocaleString()}</strong> pt</td>
+                  <td>${Number(u.count) || 0} 回</td>
+              `;
+              tbody.appendChild(tr);
+          });
+      }
+
+      function renderRankingsAndLogs() {
+          const tbody = document.querySelector('#rank-table tbody'); tbody.innerHTML = '';
+          [...(appData.users || [])].sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((u, i) => {
+              const tr = document.createElement('tr'); tr.innerHTML = `<td>${i+1}</td><td>${u.name || '-'}</td><td>${(Number(u.score) || 0).toLocaleString()} pt</td><td>${u.count || 0}回</td>`; tbody.appendChild(tr);
+          });
+          const chatSpace = document.getElementById('pc-chat-space'); chatSpace.innerHTML = '';
+          [...(appData.logs || [])].reverse().forEach(log => {
+              const msg = document.createElement('div'); msg.className = 'chat-msg'; msg.innerHTML = `<strong>[リアルタイム同期]</strong> <span style="color:#5f6368; font-size:11px;">${log.time}</span><br>${log.msg}`; chatSpace.appendChild(msg);
+          });
+      }
+
+      window.onload = init;
+  </script>
+
     <style>
         :root {
             --primary: #2b579a;
@@ -190,7 +775,7 @@
 </head>
 <body>
 
-    <!-- 🔐 ログインモーダル画面 (admin.htmlのロジックを反映) -->
+    <!-- 🔐 ログインモーダル画面 -->
     <div id="login-modal" class="login-overlay">
         <div class="login-card">
             <h2>管理者ログイン</h2>
@@ -229,7 +814,7 @@
     <main>
         <header>
             <h2 id="page-title">📍 リアルタイム状況マップ</h2>
-            <div style="font-size: 13px; color: #5f6368;">下層画像レイヤ・ファイルアップロード機能ON</div>
+            <div style="font-size: 13px; color: #5f6368;">Supabaseリアルタイム接続中</div>
         </header>
 
         <!-- 1. マップ・エリア画面 -->
@@ -330,7 +915,7 @@
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                     <div>
                         <h3 style="color:var(--primary); font-size:15px;">👥 登録ユーザー・権限管理</h3>
-                        <p style="font-size:12px; color:#666; margin-top:4px;">Google スプレッドシート（users シート）に登録されている従業員・管理者一覧です。</p>
+                        <p style="font-size:12px; color:#666; margin-top:4px;">Supabase（usersテーブル）に登録されている従業員・管理者一覧です。</p>
                     </div>
                 </div>
                 <table class="ranking-table" style="border: 1px solid var(--border);" id="users-table">
@@ -367,496 +952,5 @@
         </div>
     </main>
 
-<script>
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbx52G5XOEYzWTdw2UJemLPjzMDqa4uztgIGWrPJkYJNRSQYEiEwnOzU6np0wtl59irE/exec";
-
-    let appData = {
-        factories: [],
-        users: [],
-        areas: [],
-        schedules: {},
-        logs: []
-    };
-    let currentUser = null;
-    let currentFactoryId = "fac1";
-    let selectedAreaId = null;
-    let isEditMode = false;
-    let isDrawing = false;
-    let startXPercent, startYPercent, activeDrawingSvg = null;
-
-    async function init() {
-        // 1. 自動ログインのチェック (localStorage)
-        const savedUser = localStorage.getItem('spotlight_admin_user');
-        if (savedUser) {
-            currentUser = JSON.parse(savedUser);
-            document.getElementById('login-modal').style.display = 'none';
-        }
-
-        await loadFromGAS();
-        
-        if (currentUser) {
-            setupDashboard();
-        }
-    }
-
-    // 🔑 ログイン処理 (admin.html のGAS通信ログイン仕様)
-    async function handleLogin() {
-        const emailInput = document.getElementById('login-email-input').value.trim();
-        const errorMsg = document.getElementById('login-error-msg');
-        const submitBtn = document.getElementById('login-submit-btn');
-
-        if (!emailInput) {
-            errorMsg.innerText = "メールアドレスを入力してください。";
-            errorMsg.style.display = "block";
-            return;
-        }
-
-        submitBtn.innerText = "照合中...";
-        errorMsg.style.display = "none";
-
-        try {
-            const res = await fetch(GAS_URL, {
-                method: "POST",
-                headers: { "Content-Type": "text/plain" },
-                body: JSON.stringify({ action: "login", email: emailInput })
-            });
-            const result = await res.json();
-
-            if (result.status === "success") {
-                // 管理者権限 (admin) かどうか判定
-                if (result.user.role !== "admin") {
-                    errorMsg.innerText = "アクセスエラー：管理者権限（admin）がありません。";
-                    errorMsg.style.display = "block";
-                    return;
-                }
-
-                currentUser = result.user;
-                localStorage.setItem('spotlight_admin_user', JSON.stringify(currentUser));
-                document.getElementById('login-modal').style.display = 'none';
-                
-                await loadFromGAS();
-                setupDashboard();
-            } else {
-                errorMsg.innerText = result.message || "ログインに失敗しました。";
-                errorMsg.style.display = "block";
-            }
-        } catch (e) {
-            console.error("ログインエラー:", e);
-            errorMsg.innerText = "通信エラーが発生しました。";
-            errorMsg.style.display = "block";
-        } finally {
-            submitBtn.innerText = "ログイン";
-        }
-    }
-
-    // 🚪 ログアウト処理
-    function handleLogout() {
-        if (!confirm("ログアウトしますか？")) return;
-        localStorage.removeItem('spotlight_admin_user');
-        currentUser = null;
-        document.getElementById('login-modal').style.display = 'flex';
-        document.getElementById('login-email-input').value = '';
-        document.getElementById('login-user-disp').innerText = "ログインしていません";
-    }
-
-    function setupDashboard() {
-        if (currentUser) {
-            document.getElementById('login-user-disp').innerText = `${currentUser.name} (${currentUser.role})`;
-            document.getElementById('account-info-detail').innerHTML = `
-                <strong>名前:</strong> ${currentUser.name}<br>
-                <strong>ID:</strong> ${currentUser.id || '-'}<br>
-                <strong>Email:</strong> ${currentUser.email}<br>
-                <strong>権限:</strong> <span class="badge badge-admin">管理者 (admin)</span>
-            `;
-        }
-
-        if (appData.factories && appData.factories.length > 0) {
-            currentFactoryId = appData.factories[0].id;
-        }
-        renderTabs(); 
-        renderCanvas(); 
-        renderAreaListView(); 
-        renderScheduleTable(); 
-        renderUsersTable();
-        renderRankingsAndLogs(); 
-        setupCanvasDrawing();
-    }
-
-    async function loadFromGAS() {
-        try {
-            const res = await fetch(GAS_URL);
-            const data = await res.json();
-            if (data) appData = data;
-            if (!appData.schedules) appData.schedules = {};
-        } catch (e) {
-            console.error("データ取得エラー:", e);
-        }
-    }
-
-    async function saveToStorage() {
-        try {
-            await fetch(GAS_URL, {
-                method: "POST",
-                headers: { "Content-Type": "text/plain" },
-                body: JSON.stringify({ action: "saveData", appData: appData })
-            });
-        } catch (e) {
-            console.error("データ保存エラー:", e);
-            alert("データの保存に失敗しました。");
-        }
-    }
-
-    async function handleImageUpload(input) {
-        const file = input.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = async function(e) {
-            const base64Data = e.target.result;
-            const btnLabel = input.parentElement;
-            const originalText = btnLabel.innerText;
-            btnLabel.innerText = "⏳ Googleドライブへ保存中...";
-
-            try {
-                const res = await fetch(GAS_URL, {
-                    method: "POST",
-                    headers: { "Content-Type": "text/plain" },
-                    body: JSON.stringify({ action: "uploadImage", filename: file.name, base64: base64Data })
-                });
-                const result = await res.json();
-
-                if (result.status === "success") {
-                    const factory = appData.factories.find(f => f.id === currentFactoryId);
-                    if (factory) {
-                        factory.image = result.imageUrl;
-                        await saveToStorage();
-                        renderCanvas();
-                        alert("背景画像が保存されました！");
-                    }
-                } else {
-                    alert("保存に失敗しました: " + result.message);
-                }
-            } catch (err) {
-                console.error("画像アップロードエラー:", err);
-                alert("送信エラーが発生しました。");
-            } finally {
-                btnLabel.innerText = originalText;
-            }
-        };
-        reader.readAsDataURL(file);
-    }
-
-    function switchPcPage(pageId) {
-        document.querySelectorAll('.pc-content').forEach(p => p.classList.remove('active'));
-        document.querySelectorAll('.pc-nav-item').forEach(n => n.classList.remove('active'));
-        document.getElementById('p-pc-' + pageId).classList.add('active');
-        const activeNav = document.getElementById('t-pc-' + pageId);
-        activeNav.classList.add('active');
-        document.getElementById('page-title').innerText = activeNav.innerText;
-
-        if (pageId === 'users') renderUsersTable();
-        if (pageId === 'schedule') renderScheduleTable();
-        if (pageId === 'rank') renderRankingsAndLogs();
-    }
-
-    function toggleEditMode() {
-        isEditMode = !isEditMode;
-        const btn = document.getElementById('mode-toggle-btn');
-        const editControls = document.getElementById('edit-controls');
-        const canvas = document.getElementById('map-canvas');
-        document.getElementById('view-side-card').style.display = isEditMode ? "none" : "block";
-        document.getElementById('edit-side-card').style.display = isEditMode ? "block" : "none";
-        
-        if (isEditMode) {
-            btn.innerText = "👁️ 通常閲覧モードに戻す"; btn.className = "btn btn-secondary"; editControls.style.display = "block"; canvas.classList.add('edit-mode');
-        } else {
-            btn.innerText = "🛠️ マップ編集モードに切り替える"; btn.className = "btn"; editControls.style.display = "none"; canvas.classList.remove('edit-mode'); selectedAreaId = null;
-        }
-        renderCanvas();
-    }
-
-    function renderCanvas() {
-        const canvas = document.getElementById('map-canvas');
-        const svgLayer = document.getElementById('map-svg-layer');
-        const interactorContainer = document.getElementById('interactor-container');
-        
-        svgLayer.innerHTML = ''; interactorContainer.innerHTML = '';
-        
-        const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
-        if (currentFac && currentFac.image) {
-            canvas.style.backgroundImage = `url('${currentFac.image}')`;
-        } else {
-            canvas.style.backgroundImage = "none";
-        }
-
-        const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
-        filtered.forEach(area => {
-            let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-            shape.setAttribute("x", area.x + "%");
-            shape.setAttribute("y", area.y + "%");
-            shape.setAttribute("width", area.w + "%");
-            shape.setAttribute("height", area.h + "%");
-
-            const isCleaned = area.status === 'cleaned';
-            shape.setAttribute("fill", isCleaned ? "rgba(16, 124, 65, 0.35)" : "rgba(216, 59, 1, 0.35)");
-            shape.setAttribute("stroke", isCleaned ? "var(--success)" : "var(--accent)");
-            shape.setAttribute("stroke-width", area.id === selectedAreaId ? "3" : "1.5");
-            svgLayer.appendChild(shape);
-
-            const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-            text.setAttribute("x", (area.x + (area.w / 2)) + "%");
-            text.setAttribute("y", (area.y + (area.h / 2)) + "%");
-            text.setAttribute("text-anchor", "middle");
-            text.setAttribute("dominant-baseline", "central");
-            text.setAttribute("font-size", "11px");
-            text.setAttribute("font-weight", "bold");
-            text.setAttribute("fill", "#000");
-            text.textContent = area.name;
-            svgLayer.appendChild(text);
-
-            const interactor = document.createElement('div');
-            interactor.className = `area-interactor ${isEditMode ? 'mode-edit' : ''} ${area.id === selectedAreaId ? 'edit-active' : ''}`;
-            interactor.style.left = area.x + '%';
-            interactor.style.top = area.y + '%';
-            interactor.style.width = area.w + '%';
-            interactor.style.height = area.h + '%';
-
-            if (isEditMode) {
-                const handle = document.createElement('div');
-                handle.className = 'resize-handle';
-                handle.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); initResize(e, area); });
-                interactor.appendChild(handle);
-            }
-
-            interactor.addEventListener('mousedown', (e) => {
-                if (!isEditMode) return;
-                e.stopPropagation(); selectArea(area.id); initDragMove(e, area);
-            });
-
-            interactorContainer.appendChild(interactor);
-        });
-    }
-
-    function renderTabs() {
-        const container = document.getElementById('factory-tabs-container');
-        container.innerHTML = '';
-        (appData.factories || []).forEach(f => {
-            const btn = document.createElement('button');
-            btn.className = `tab-btn ${f.id === currentFactoryId ? 'active' : ''}`;
-            btn.innerText = f.name;
-            btn.onclick = async () => {
-                currentFactoryId = f.id; selectedAreaId = null;
-                document.getElementById('property-form').style.display = 'none';
-                document.getElementById('no-select-hint').style.display = 'block';
-                await loadFromGAS();
-                renderTabs(); renderCanvas(); renderAreaListView();
-            };
-            container.appendChild(btn);
-        });
-    }
-
-    async function addNewFactory() {
-        const count = (appData.factories || []).length + 1;
-        const name = "第" + count + "工場";
-        const id = "fac_" + Date.now();
-        if (!appData.factories) appData.factories = [];
-        appData.factories.push({ id: id, name: name, image: "" });
-        currentFactoryId = id; 
-        await saveToStorage(); renderTabs(); renderCanvas();
-    }
-
-    async function deleteCurrentFactory() {
-        if ((appData.factories || []).length <= 1) return alert("これ以上削除できません。");
-        if (!confirm("この大枠と、含まれる清掃区画をすべて削除しますか？")) return;
-        appData.areas = (appData.areas || []).filter(a => a.factoryId !== currentFactoryId);
-        appData.factories = appData.factories.filter(f => f.id !== currentFactoryId);
-        currentFactoryId = appData.factories[0].id; selectedAreaId = null;
-        await saveToStorage(); renderTabs(); renderCanvas(); renderAreaListView(); renderScheduleTable();
-    }
-
-    function setupCanvasDrawing() {
-        const canvas = document.getElementById('map-canvas');
-        canvas.addEventListener('mousedown', (e) => {
-            if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer')) return;
-            isDrawing = true;
-            const rect = canvas.getBoundingClientRect();
-            startXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-            startYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-            
-            activeDrawingSvg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-            activeDrawingSvg.setAttribute("fill", "rgba(216, 59, 1, 0.35)");
-            activeDrawingSvg.setAttribute("stroke", "var(--accent)");
-            activeDrawingSvg.setAttribute("stroke-dasharray", "4");
-            activeDrawingSvg.setAttribute("x", startXPercent + "%");
-            activeDrawingSvg.setAttribute("y", startYPercent + "%");
-            document.getElementById('map-svg-layer').appendChild(activeDrawingSvg);
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!isDrawing) return;
-            const rect = canvas.getBoundingClientRect();
-            const currentXPercent = Math.max(0, Math.min(((e.clientX - rect.left) / rect.width) * 100, 100));
-            const currentYPercent = Math.max(0, Math.min(((e.clientY - rect.top) / rect.height) * 100, 100));
-            
-            const x = Math.min(startXPercent, currentXPercent);
-            const y = Math.min(startYPercent, currentYPercent);
-            const w = Math.abs(startXPercent - currentXPercent);
-            const h = Math.abs(startYPercent - currentYPercent);
-            
-            activeDrawingSvg.setAttribute("x", x + "%"); activeDrawingSvg.setAttribute("y", y + "%");
-            activeDrawingSvg.setAttribute("width", w + "%"); activeDrawingSvg.setAttribute("height", h + "%");
-        });
-
-        window.addEventListener('mouseup', async () => {
-            if (!isDrawing) return;
-            isDrawing = false;
-            
-            const x = parseFloat(activeDrawingSvg.getAttribute("x"));
-            const y = parseFloat(activeDrawingSvg.getAttribute("y"));
-            const w = parseFloat(activeDrawingSvg.getAttribute("width")) || 0;
-            const h = parseFloat(activeDrawingSvg.getAttribute("height")) || 0;
-            
-            if (w > 2 && h > 2) {
-                const newId = "room_" + Date.now();
-                if (!appData.areas) appData.areas = [];
-                appData.areas.push({ id: newId, factoryId: currentFactoryId, name: "新規清掃区画", type: "rect", x: x, y: y, w: w, h: h, points: [], status: "not-cleaned" });
-                if (!appData.schedules) appData.schedules = {};
-                appData.schedules[newId] = { Mon: "", Tue: "", Wed: "", Thu: "", Fri: "" };
-                await saveToStorage(); selectArea(newId);
-            }
-            if (activeDrawingSvg) activeDrawingSvg.remove();
-            activeDrawingSvg = null;
-            renderCanvas(); renderAreaListView(); renderScheduleTable();
-        });
-    }
-
-    function initDragMove(e, area) {
-        const canvas = document.getElementById('map-canvas');
-        const rect = canvas.getBoundingClientRect();
-        const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-        const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-        const startAreaX = area.x, startAreaY = area.y;
-
-        function onMouseMove(mEvent) {
-            const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
-            const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
-            area.x = Math.max(0, Math.min(startAreaX + (currentMouseXPercent - startMouseXPercent), 100 - area.w));
-            area.y = Math.max(0, Math.min(startAreaY + (currentMouseYPercent - startMouseYPercent), 100 - area.h));
-            renderCanvas();
-        }
-
-        async function onMouseUp() {
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-            await saveToStorage(); renderCanvas();
-        }
-        window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
-    }
-
-    function initResize(e, area) {
-        const canvas = document.getElementById('map-canvas');
-        const rect = canvas.getBoundingClientRect();
-        const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-        const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-        const startW = area.w, startH = area.h;
-
-        function onMouseMove(mEvent) {
-            const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
-            const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
-            area.w = Math.max(2, Math.min(startW + (currentMouseXPercent - startMouseXPercent), 100 - area.x));
-            area.h = Math.max(2, Math.min(startH + (currentMouseYPercent - startMouseYPercent), 100 - area.y));
-            renderCanvas();
-        }
-
-        async function onMouseUp() {
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-            await saveToStorage(); renderCanvas();
-        }
-        window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
-    }
-
-    function selectArea(id) {
-        selectedAreaId = id; const area = (appData.areas || []).find(a => a.id === id); if (!area) return;
-        document.getElementById('no-select-hint').style.display = 'none'; document.getElementById('property-form').style.display = 'block';
-        document.getElementById('prop-name').value = area.name; document.getElementById('prop-status').value = area.status; renderCanvas();
-    }
-
-    async function updateAreaName(val) { if (selectedAreaId) { appData.areas.find(a => a.id === selectedAreaId).name = val; await saveToStorage(); renderCanvas(); renderAreaListView(); renderScheduleTable(); } }
-    async function updateAreaStatus(val) { if (selectedAreaId) { appData.areas.find(a => a.id === selectedAreaId).status = val; await saveToStorage(); renderCanvas(); renderAreaListView(); } }
-    
-    async function deleteSelectedArea() {
-        if (!selectedAreaId || !confirm("削除しますか？")) return;
-        appData.areas = appData.areas.filter(a => a.id !== selectedAreaId); 
-        if (appData.schedules) delete appData.schedules[selectedAreaId];
-        selectedAreaId = null; document.getElementById('property-form').style.display = 'none'; document.getElementById('no-select-hint').style.display = 'block';
-        await saveToStorage(); renderCanvas(); renderAreaListView(); renderScheduleTable();
-    }
-
-    function renderAreaListView() {
-        const ul = document.getElementById('pc-area-list-view'); ul.innerHTML = '';
-        const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
-        if (filtered.length === 0) { ul.innerHTML = "<li style='color:#999; font-size:12px;'>登録エリアはありません。</li>"; return; }
-        filtered.forEach(area => { const li = document.createElement('li'); li.innerHTML = `・${area.name} (${area.status === 'cleaned' ? '<span style="color:green;">🟢完了</span>' : '<span style="color:orange;">🔴未清掃</span>'})`; ul.appendChild(li); });
-    }
-
-    function renderScheduleTable() {
-        const tbody = document.getElementById('schedule-table-body'); tbody.innerHTML = '';
-        (appData.areas || []).forEach(area => {
-            const fac = (appData.factories || []).find(f => f.id === area.factoryId);
-            const tr = document.createElement('tr');
-            const tdLabel = document.createElement('td'); tdLabel.innerHTML = `<strong>${area.name}</strong> <span style="font-size:11px; color:#777;">(${fac?fac.name:"?"})</span>`; tr.appendChild(tdLabel);
-            ["Mon", "Tue", "Wed", "Thu", "Fri"].forEach(day => {
-                const td = document.createElement('td'); const select = document.createElement('select'); select.className = 'form-control';
-                const optEmpty = document.createElement('option'); optEmpty.value = ""; optEmpty.innerText = "- 未設定 -"; select.appendChild(optEmpty);
-                (appData.users || []).forEach(u => { const opt = document.createElement('option'); opt.value = u.id; opt.innerText = u.name; if (appData.schedules?.[area.id]?.[day] === u.id) opt.selected = true; select.appendChild(opt); });
-                select.onchange = async (e) => { if (!appData.schedules) appData.schedules = {}; if (!appData.schedules[area.id]) appData.schedules[area.id] = {}; appData.schedules[area.id][day] = e.target.value; await saveToStorage(); };
-                td.appendChild(select); tr.appendChild(td);
-            });
-            tbody.appendChild(tr);
-        });
-    }
-
-    function renderUsersTable() {
-        const tbody = document.getElementById('users-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-
-        if (!appData.users || appData.users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999;">ユーザーデータが取得されていません。</td></tr>';
-            return;
-        }
-
-        appData.users.forEach(u => {
-            const tr = document.createElement('tr');
-            const roleBadge = u.role === 'admin' 
-                ? '<span class="badge badge-admin">管理者 (admin)</span>' 
-                : '<span class="badge badge-worker">作業者 (worker)</span>';
-
-            tr.innerHTML = `
-                <td><code>${u.id || '-'}</code></td>
-                <td><strong>${u.name || '-'}</strong></td>
-                <td>${u.email || '-'}</td>
-                <td>${roleBadge}</td>
-                <td><strong>${(Number(u.score) || 0).toLocaleString()}</strong> pt</td>
-                <td>${Number(u.count) || 0} 回</td>
-            `;
-            tbody.appendChild(tr);
-        });
-    }
-
-    function renderRankingsAndLogs() {
-        const tbody = document.querySelector('#rank-table tbody'); tbody.innerHTML = '';
-        [...(appData.users || [])].sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((u, i) => {
-            const tr = document.createElement('tr'); tr.innerHTML = `<td>${i+1}</td><td>${u.name || '-'}</td><td>${(Number(u.score) || 0).toLocaleString()} pt</td><td>${u.count || 0}回</td>`; tbody.appendChild(tr);
-        });
-        const chatSpace = document.getElementById('pc-chat-space'); chatSpace.innerHTML = '';
-        [...(appData.logs || [])].reverse().forEach(log => {
-            const msg = document.createElement('div'); msg.className = 'chat-msg'; msg.innerHTML = `<strong>[同期通信]</strong> <span style="color:#5f6368; font-size:11px;">${log.time}</span><br>${log.msg}`; chatSpace.appendChild(msg);
-        });
-    }
-
-    window.onload = init;
-</script>
 </body>
 </html>
