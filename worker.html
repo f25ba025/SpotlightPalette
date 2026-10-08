@@ -189,7 +189,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-browser-js@2"></script>
 
 <script>
-  // STEP 1で取得したURLとanonキーに置き換えてください
   const SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
   const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
   const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -208,7 +207,7 @@
       }
 
       await loadFromSupabase();
-      subscribeToRealtime(); // リアルタイム自動更新の開始
+      subscribeToRealtime();
 
       if (appData.factories && appData.factories.length > 0) {
           currentFactoryId = appData.factories[0].id;
@@ -233,13 +232,11 @@
           appData.users = resUsers.data || [];
           appData.factories = resFactories.data || [];
           
-          // DBのカラム名(factory_id)を既存コードの属性名(factoryId)にマッピング
           appData.areas = (resAreas.data || []).map(a => ({
               ...a,
               factoryId: a.factory_id
           }));
 
-          // schedules を areaId をキーとしたオブジェクトにマッピング
           appData.schedules = {};
           (resSchedules.data || []).forEach(s => {
               appData.schedules[s.area_id] = {
@@ -257,12 +254,10 @@
       }
   }
 
-  // ⭐ 超重要: リアルタイム自動同期の設定
   function subscribeToRealtime() {
       supabaseClient
           .channel('schema-db-changes')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'areas' }, async () => {
-              // 他のユーザーが清掃報告したら自動でデータを再取得してマップを更新
               await loadFromSupabase();
               renderCanvas();
               renderMyTasks();
@@ -274,7 +269,6 @@
           .subscribe();
   }
 
-  // ログイン処理（usersテーブルと照合）
   async function handleLogin() {
       const emailInput = document.getElementById('login-email-input').value.trim();
       const errorMsg = document.getElementById('login-error-msg');
@@ -290,12 +284,11 @@
       errorMsg.style.display = "none";
 
       try {
-          // ★ supabase.from(...) ではなく supabaseClient.from(...) を使う
           const { data, error } = await supabaseClient
               .from('users')
               .select('*')
               .eq('email', emailInput)
-              .maybeSingle(); // single() より maybeSingle() の方がエラーが出にくく安全です
+              .maybeSingle();
 
           if (error) throw error;
 
@@ -318,7 +311,143 @@
       }
   }
 
-  // 清掃完了報告（Supabase更新）
+  function handleLogout() {
+      if (!confirm("ログアウトしますか？")) return;
+      localStorage.removeItem('spotlight_user');
+      currentUser = null;
+      document.getElementById('login-overlay').style.display = 'flex';
+      document.getElementById('login-email-input').value = '';
+  }
+
+  function setupUserSession() {
+      renderUserSelect();
+      renderFactorySelect();
+      renderCanvas();
+      renderMyTasks();
+      renderRankings();
+      renderLogs();
+
+      if (currentUser) {
+          document.getElementById('account-user-name').innerText = currentUser.name;
+          document.getElementById('account-user-email').innerText = currentUser.email || "";
+          const select = document.getElementById('emp-user-select');
+          if (select) select.value = currentUser.id;
+      }
+  }
+
+  function switchEmpPage(pageId) {
+      document.querySelectorAll('.phone-content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.phone-nav-item').forEach(t => t.classList.remove('active'));
+      
+      document.getElementById('p-emp-' + pageId).classList.add('active');
+      document.getElementById('t-emp-' + pageId).classList.add('active');
+
+      if (currentUser) {
+          loadFromSupabase().then(() => {
+              if (pageId === 'area') { renderCanvas(); renderMyTasks(); }
+              if (pageId === 'rank') renderRankings();
+              if (pageId === 'history') renderLogs();
+          });
+      }
+  }
+
+  function renderUserSelect() {
+      const select = document.getElementById('emp-user-select');
+      select.innerHTML = '';
+      (appData.users || []).forEach(u => {
+          const opt = document.createElement('option');
+          opt.value = u.id;
+          opt.innerText = u.name;
+          select.appendChild(opt);
+      });
+      select.onchange = () => { renderMyTasks(); };
+  }
+
+  function renderFactorySelect() {
+      const select = document.getElementById('emp-factory-select');
+      select.innerHTML = '';
+      (appData.factories || []).forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.innerText = f.name;
+          if (f.id === currentFactoryId) opt.selected = true;
+          select.appendChild(opt);
+      });
+  }
+
+  function onFactorySelectChange(val) {
+      currentFactoryId = val;
+      renderCanvas();
+  }
+
+  function renderCanvas() {
+      const wrapper = document.getElementById('emp-canvas-parent');
+      const svg = document.getElementById('emp-svg');
+      svg.innerHTML = '';
+
+      const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
+      if (currentFac && currentFac.image) {
+          wrapper.style.backgroundImage = `url('${currentFac.image}')`;
+      } else {
+          wrapper.style.backgroundImage = "none";
+      }
+
+      const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
+      filtered.forEach(area => {
+          let shape;
+          if (area.type === "polygon" && area.points && area.points.length > 0) {
+              shape = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+              const pointsAttr = area.points.map(p => `${p.x}%,${p.y}%`).join(" ");
+              shape.setAttribute("points", pointsAttr);
+          } else {
+              shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+              shape.setAttribute("x", (area.x || 0) + "%");
+              shape.setAttribute("y", (area.y || 0) + "%");
+              shape.setAttribute("width", (area.w || 0) + "%");
+              shape.setAttribute("height", (area.h || 0) + "%");
+          }
+
+          const isCleaned = area.status === 'cleaned';
+          shape.setAttribute("fill", isCleaned ? "rgba(16, 124, 65, 0.4)" : "rgba(216, 59, 1, 0.4)");
+          shape.setAttribute("stroke", isCleaned ? "#107c41" : "#d83b01");
+          shape.setAttribute("stroke-width", "2");
+          shape.style.cursor = "pointer";
+          shape.onclick = () => openModal(area);
+          svg.appendChild(shape);
+
+          const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          text.setAttribute("x", ((area.x || 0) + (area.w || 0) / 2) + "%");
+          text.setAttribute("y", ((area.y || 0) + (area.h || 0) / 2) + "%");
+          text.setAttribute("text-anchor", "middle");
+          text.setAttribute("dominant-baseline", "central");
+          text.setAttribute("font-size", "11px");
+          text.setAttribute("font-weight", "bold");
+          text.setAttribute("fill", "#000");
+          text.style.pointerEvents = "none";
+          text.textContent = area.name;
+          svg.appendChild(text);
+      });
+  }
+
+  function openModal(area) {
+      selectedAreaId = area.id;
+      document.getElementById('modal-area-name').innerText = area.name;
+      document.getElementById('modal-area-status').innerText = area.status === 'cleaned' ? '🟢 完了' : '🔴 未清掃';
+      
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const todayKey = days[new Date().getDay()] === 'Sun' || days[new Date().getDay()] === 'Sat' ? 'Mon' : days[new Date().getDay()];
+      const assignedUserId = (appData.schedules && appData.schedules[area.id]) ? appData.schedules[area.id][todayKey] : null;
+      const assignedUser = (appData.users || []).find(u => u.id === assignedUserId);
+      
+      document.getElementById('modal-area-assignee').innerText = assignedUser ? assignedUser.name : '未設定';
+      document.getElementById('emp-modal').style.display = 'flex';
+  }
+
+  function closeModal() {
+      document.getElementById('emp-modal').style.display = 'none';
+      selectedAreaId = null;
+  }
+
   async function completeCleaning() {
       if (!selectedAreaId) return;
       const area = (appData.areas || []).find(a => a.id === selectedAreaId);
@@ -329,17 +458,14 @@
       btn.innerText = "保存中...";
 
       try {
-          // 1. エリアのステータス更新
           await supabaseClient.from('areas').update({ status: 'cleaned' }).eq('id', selectedAreaId);
 
-          // 2. ユーザーのスコア更新
           if (user) {
               const newScore = (Number(user.score) || 0) + 100;
               const newCount = (Number(user.count) || 0) + 1;
               await supabaseClient.from('users').update({ score: newScore, count: newCount }).eq('id', userId);
           }
 
-          // 3. ログの追加
           const now = new Date();
           const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
           const logMsg = `${user ? user.name : '作業者'} が 「${area ? area.name : ''}」 の清掃を完了しました！ (+100pt)`;
@@ -361,6 +487,45 @@
           btn.innerText = "清掃完了を報告 (+100pt)";
       }
   }
+
+  function renderMyTasks() {
+      const container = document.getElementById('my-duty-list');
+      const userId = document.getElementById('emp-user-select').value;
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const todayKey = days[new Date().getDay()] === 'Sun' || days[new Date().getDay()] === 'Sat' ? 'Mon' : days[new Date().getDay()];
+
+      const myAreas = (appData.areas || []).filter(a => appData.schedules && appData.schedules[a.id] && appData.schedules[a.id][todayKey] === userId);
+
+      if (myAreas.length === 0) {
+          container.innerHTML = "<span style='color:#777; font-weight:normal;'>本日の担当エリアはありません。</span>";
+          return;
+      }
+
+      container.innerHTML = myAreas.map(a => `・${a.name} (${a.status === 'cleaned' ? '🟢完了' : '🔴未清掃'})`).join('<br>');
+  }
+
+  function renderRankings() {
+      const tbody = document.querySelector('#emp-rank-table tbody');
+      tbody.innerHTML = '';
+      [...(appData.users || [])].sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0)).forEach((u, i) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${i + 1}位</td><td>${u.name}</td><td><strong>${(Number(u.score) || 0).toLocaleString()} pt</strong></td>`;
+          tbody.appendChild(tr);
+      });
+  }
+
+  function renderLogs() {
+      const container = document.getElementById('history-list-container');
+      container.innerHTML = '';
+      [...(appData.logs || [])].reverse().forEach(log => {
+          const div = document.createElement('div');
+          div.style.cssText = "background:white; padding:8px 10px; margin-bottom:8px; border-left:4px solid #2b579a; border-radius:4px; font-size:12px;";
+          div.innerHTML = `<span style="color:#777; font-size:10px;">${log.time}</span><br>${log.msg}`;
+          container.appendChild(div);
+      });
+  }
+
+  window.onload = init;
 </script>
 </body>
 </html>
