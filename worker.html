@@ -192,7 +192,7 @@
   // STEP 1で取得したURLとanonキーに置き換えてください
   const SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co/rest/v1/";
   const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
-  const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
   let appData = { factories: [], users: [], areas: [], schedules: {}, logs: [] };
   let currentFactoryId = "";
@@ -223,11 +223,11 @@
   async function loadFromSupabase() {
       try {
           const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
-              supabase.from('users').select('*'),
-              supabase.from('factories').select('*'),
-              supabase.from('areas').select('*'),
-              supabase.from('schedules').select('*'),
-              supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(20)
+              supabaseClient.from('users').select('*'),
+              supabaseClient.from('factories').select('*'),
+              supabaseClient.from('areas').select('*'),
+              supabaseClient.from('schedules').select('*'),
+              supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(20)
           ]);
 
           appData.users = resUsers.data || [];
@@ -259,7 +259,7 @@
 
   // ⭐ 超重要: リアルタイム自動同期の設定
   function subscribeToRealtime() {
-      supabase
+      supabaseClient
           .channel('schema-db-changes')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'areas' }, async () => {
               // 他のユーザーが清掃報告したら自動でデータを再取得してマップを更新
@@ -290,13 +290,16 @@
       errorMsg.style.display = "none";
 
       try {
-          const { data, error } = await supabase
+          // ★ supabase.from(...) ではなく supabaseClient.from(...) を使う
+          const { data, error } = await supabaseClient
               .from('users')
               .select('*')
               .eq('email', emailInput)
-              .single();
+              .maybeSingle(); // single() より maybeSingle() の方がエラーが出にくく安全です
 
-          if (data && !error) {
+          if (error) throw error;
+
+          if (data) {
               currentUser = data;
               localStorage.setItem('spotlight_user', JSON.stringify(currentUser));
               document.getElementById('login-overlay').style.display = 'none';
@@ -327,13 +330,13 @@
 
       try {
           // 1. エリアのステータス更新
-          await supabase.from('areas').update({ status: 'cleaned' }).eq('id', selectedAreaId);
+          await supabaseClient.from('areas').update({ status: 'cleaned' }).eq('id', selectedAreaId);
 
           // 2. ユーザーのスコア更新
           if (user) {
               const newScore = (Number(user.score) || 0) + 100;
               const newCount = (Number(user.count) || 0) + 1;
-              await supabase.from('users').update({ score: newScore, count: newCount }).eq('id', userId);
+              await supabaseClient.from('users').update({ score: newScore, count: newCount }).eq('id', userId);
           }
 
           // 3. ログの追加
@@ -341,7 +344,7 @@
           const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
           const logMsg = `${user ? user.name : '作業者'} が 「${area ? area.name : ''}」 の清掃を完了しました！ (+100pt)`;
           
-          await supabase.from('logs').insert([{
+          await supabaseClient.from('logs').insert([{
               time: timeStr,
               msg: logMsg
           }]);
