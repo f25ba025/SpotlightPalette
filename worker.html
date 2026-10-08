@@ -5,12 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>スポットライトパレット - 従業員用</title>
 
-    <!-- Supabase SDK の読み込み -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-browser-js@2"></script>
+    <!-- 修正：Supabase SDK の正しいCDN読み込み -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
       var SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
       var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
-      var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+      
+      // 正しく初期化されるかチェック
+      var supabaseClient = null;
+      try {
+          if (window.supabase) {
+              supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+          } else {
+              console.error("Supabaseライブラリが読み込まれていません");
+          }
+      } catch (e) {
+          console.error("Supabase初期化エラー:", e);
+      }
 
       var appData = { factories: [], users: [], areas: [], schedules: {}, logs: [] };
       var currentFactoryId = "";
@@ -37,6 +48,7 @@
       }
 
       async function loadFromSupabase() {
+          if (!supabaseClient) return;
           try {
               const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
                   supabaseClient.from('users').select('*'),
@@ -72,6 +84,7 @@
       }
 
       function subscribeToRealtime() {
+          if (!supabaseClient) return;
           supabaseClient
               .channel('schema-db-changes')
               .on('postgres_changes', { event: '*', schema: 'public', table: 'areas' }, async () => {
@@ -93,6 +106,12 @@
 
           if (!emailInput) {
               errorMsg.innerText = "メールアドレスを入力してください。";
+              errorMsg.style.display = "block";
+              return;
+          }
+
+          if (!supabaseClient) {
+              errorMsg.innerText = "データベースに接続されていません。";
               errorMsg.style.display = "block";
               return;
           }
@@ -266,7 +285,7 @@
       }
 
       async function completeCleaning() {
-          if (!selectedAreaId) return;
+          if (!selectedAreaId || !supabaseClient) return;
           const area = (appData.areas || []).find(a => a.id === selectedAreaId);
           const userId = document.getElementById('emp-user-select').value;
           const user = (appData.users || []).find(u => u.id === userId);
