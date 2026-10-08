@@ -5,19 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>スポットライトパレット - 従業員用</title>
 
-    <!-- Supabase SDK と初期化コードを <head> 内で最初に読み込む -->
+    <!-- Supabase SDK の読み込み -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-browser-js@2"></script>
     <script>
-      const SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
-      const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
-      
-      // グローバル変数として初期化
-      const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+      var SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
+      var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
+      var supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-      let appData = { factories: [], users: [], areas: [], schedules: {}, logs: [] };
-      let currentFactoryId = "";
-      let selectedAreaId = null;
-      let currentUser = null;
+      var appData = { factories: [], users: [], areas: [], schedules: {}, logs: [] };
+      var currentFactoryId = "";
+      var selectedAreaId = null;
+      var currentUser = null;
 
       async function init() {
           const savedUser = localStorage.getItem('spotlight_user');
