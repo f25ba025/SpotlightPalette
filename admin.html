@@ -148,7 +148,7 @@
           try {
               const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
                   supabaseClient.from('users').select('*'),
-                  supabaseClient.from('factories').select('*'),
+                  supabaseClient.from('factories').select('*').order('created_at', { ascending: true }), // 例: 登録順に昇順ソート,
                   supabaseClient.from('areas').select('*'),
                   supabaseClient.from('schedules').select('*'),
                   supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(50)
