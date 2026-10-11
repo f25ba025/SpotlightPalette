@@ -54,7 +54,7 @@
           }
       }
 
-      // 🔑 ログイン処理 (Supabase usersテーブル照合)
+      // 🔑 ログイン処理
       async function handleLogin() {
           const emailInput = document.getElementById('login-email-input').value.trim();
           const errorMsg = document.getElementById('login-error-msg');
@@ -143,7 +143,6 @@
           setupCanvasDrawing();
       }
 
-      // Supabaseから全データを一括取得
       async function loadFromSupabase() {
           if (!supabaseClient) return;
           try {
@@ -180,40 +179,56 @@
           }
       }
 
-      // 背景画像のアップロード（SupabaseのfactoriesテーブルのimageカラムにBase64保存）
+      // 🖼️ Supabase Storage を使用した背景画像のアップロード処理
       async function handleImageUpload(input) {
           const file = input.files[0];
           if (!file) return;
 
-          const reader = new FileReader();
-          reader.onload = async function(e) {
-              const base64Data = e.target.result;
-              const btnLabel = input.parentElement;
-              const originalText = btnLabel.innerText;
-              btnLabel.innerText = "⏳ データベースへ保存中...";
+          const btnLabel = input.parentElement;
+          const originalText = btnLabel.innerText;
+          btnLabel.innerText = "⏳ ストレージへアップロード中...";
 
-              try {
-                  const { error } = await supabaseClient
-                      .from('factories')
-                      .update({ image: base64Data })
-                      .eq('id', currentFactoryId);
+          try {
+              const fileExt = file.name.split('.').pop();
+              const fileName = `${currentFactoryId}_${Date.now()}.${fileExt}`;
+              const filePath = `${fileName}`;
 
-                  if (!error) {
-                      const factory = appData.factories.find(f => f.id === currentFactoryId);
-                      if (factory) factory.image = base64Data;
-                      renderCanvas();
-                      alert("背景画像が保存されました！");
-                  } else {
-                      alert("保存に失敗しました: " + error.message);
-                  }
-              } catch (err) {
-                  console.error("画像アップロードエラー:", err);
-                  alert("送信エラーが発生しました。");
-              } finally {
-                  btnLabel.innerText = originalText;
+              // 1. Supabase Storage の 'factory-maps' バケットへアップロード
+              const { error: uploadError } = await supabaseClient.storage
+                  .from('factory-maps')
+                  .upload(filePath, file, { upsert: true });
+
+              if (uploadError) throw uploadError;
+
+              // 2. アップロードしたファイルの公開URLを取得
+              const { data: urlData } = supabaseClient.storage
+                  .from('factory-maps')
+                  .getPublicUrl(filePath);
+
+              const publicImageUrl = urlData.publicUrl;
+
+              // 3. factories テーブルの image カラムにURLを保存
+              const { error: updateError } = await supabaseClient
+                  .from('factories')
+                  .update({ image: publicImageUrl })
+                  .eq('id', currentFactoryId);
+
+              if (updateError) throw updateError;
+
+              // 4. ローカルデータを更新して再描画
+              const factory = appData.factories.find(f => f.id === currentFactoryId);
+              if (factory) {
+                  factory.image = publicImageUrl;
               }
-          };
-          reader.readAsDataURL(file);
+              renderCanvas();
+              alert("背景画像がStorageに保存され、マップが更新されました！");
+
+          } catch (err) {
+              console.error("画像アップロードエラー:", err);
+              alert("画像のアップロードに失敗しました: " + (err.message || err));
+          } finally {
+              btnLabel.innerText = originalText;
+          }
       }
 
       function switchPcPage(pageId) {
@@ -538,7 +553,7 @@
                       if (!appData.schedules[area.id]) appData.schedules[area.id] = {}; 
                       appData.schedules[area.id][day] = e.target.value; 
 
-                      const dbColumn = day.toLowerCase(); // mon, tue, wed, thu, fri
+                      const dbColumn = day.toLowerCase(); 
                       await supabaseClient.from('schedules').update({ [dbColumn]: e.target.value }).eq('area_id', area.id);
                   };
                   td.appendChild(select); tr.appendChild(td);
@@ -607,7 +622,6 @@
         * { box-sizing: border-box; font-family: 'Segoe UI', Meiryo, sans-serif; margin: 0; padding: 0; }
         body { background-color: var(--gray-bg); color: var(--dark); display: flex; min-height: 100vh; overflow-x: hidden; }
         
-        /* ログインモーダル */
         .login-overlay {
             position: fixed;
             top: 0; left: 0; width: 100vw; height: 100vh;
@@ -630,7 +644,6 @@
         .login-card p { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
         .login-error { color: var(--accent); font-size: 12px; margin-bottom: 12px; display: none; text-align: center; }
 
-        /* サイドバー構造 */
         aside {
             width: 260px;
             background-color: var(--sidebar-bg);
@@ -695,7 +708,6 @@
         }
         .logout-btn:hover { color: white; border-color: white; }
 
-        /* メインエリア */
         main { flex: 1; margin-left: 260px; display: flex; flex-direction: column; min-height: 100vh; }
         header { background: white; padding: 15px 30px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
         header h2 { font-size: 16px; color: #5f6368; font-weight: 600; }
@@ -709,7 +721,6 @@
         .tab-btn.active { background: white; border-bottom: 2px solid white; margin-bottom: -2px; color: var(--primary); }
         .tab-add-btn { padding: 6px 12px; background: #6b7280; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; margin-bottom: 10px; display: inline-block; }
 
-        /* キャンバス */
         .canvas-wrapper {
             position: relative;
             width: 100%;
@@ -749,12 +760,10 @@
         }
         .area-interactor.edit-active .resize-handle { display: block; }
 
-        /* テーブルスタイル */
         .ranking-table { width: 100%; border-collapse: collapse; background: white; }
         .ranking-table th, .ranking-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
         .ranking-table th { background: #f8f9fa; font-weight: bold; color: #5f6368; }
 
-        /* バッジスタイル */
         .badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
         .badge-admin { background-color: #fee2e2; color: #991b1b; }
         .badge-worker { background-color: #e0f2fe; color: #075985; }
@@ -814,7 +823,7 @@
     <main>
         <header>
             <h2 id="page-title">📍 リアルタイム状況マップ</h2>
-            <div style="font-size: 13px; color: #5f6368;">Supabaseリアルタイム接続中</div>
+            <div style="font-size: 13px; color: #5f6368;">Supabase Storage 連携中</div>
         </header>
 
         <!-- 1. マップ・エリア画面 -->
@@ -835,7 +844,7 @@
                 </label>
                 
                 <button class="tab-add-btn btn-danger" style="margin-left:10px;" onclick="deleteCurrentFactory()">✖ この大枠を削除</button>
-                <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】画像上の白地をドラッグすると新しい清掃枠（四角）が作れます。枠を選択後、ドラッグで移動、右下の■ハンドルをドラッグしてサイズ変更が可能です。</div>
+                <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】画像上の白地をドラッグすると新しい清掃枠（四角）が作れます。</div>
             </div>
 
             <div class="grid-2">
@@ -851,7 +860,6 @@
                 <div>
                     <div class="card" id="view-side-card">
                         <h3 style="margin-bottom:12px; color:var(--primary); font-size:14px;">現在の登録エリア状況</h3>
-                        <p style="font-size:12px; color:#666; margin-bottom:12px;">大枠（工場）を切り替えると、アップロードされたそれぞれの図面と清掃枠が表示されます。</p>
                         <ul id="pc-area-list-view" style="font-size:13px; list-style:none; line-height:26px;"></ul>
                     </div>
 
@@ -912,12 +920,7 @@
         <!-- 4. ユーザー管理画面 -->
         <div id="p-pc-users" class="pc-content app-page">
             <div class="card">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                    <div>
-                        <h3 style="color:var(--primary); font-size:15px;">👥 登録ユーザー・権限管理</h3>
-                        <p style="font-size:12px; color:#666; margin-top:4px;">Supabase（usersテーブル）に登録されている従業員・管理者一覧です。</p>
-                    </div>
-                </div>
+                <h3 style="color:var(--primary); font-size:15px; margin-bottom:15px;">👥 登録ユーザー・権限管理</h3>
                 <table class="ranking-table" style="border: 1px solid var(--border);" id="users-table">
                     <thead>
                         <tr>
@@ -939,7 +942,6 @@
             <div class="card" style="max-width:600px;">
                 <h3 style="margin-bottom:15px; color:var(--warning); font-size:15px;">⚙️ Google Chat 自動リマインド連携</h3>
                 <div class="form-group"><label>自動通知リマインドタイミング</label><select class="form-control"><option>当日 朝 07:45</option></select></div>
-                <div class="form-group"><label>Google Chat Webhook URL</label><input type="text" class="form-control" value="https://chat.googleapis.com/v1/spaces/..." readonly></div>
             </div>
         </div>
 
