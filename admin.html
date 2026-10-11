@@ -148,7 +148,7 @@
           try {
               const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
                   supabaseClient.from('users').select('*'),
-                  supabaseClient.from('factories').select('*').order('created_at', { ascending: true }), // 例: 登録順に昇順ソート,
+                  supabaseClient.from('factories').select('*').order('created_at', { ascending: true }),
                   supabaseClient.from('areas').select('*'),
                   supabaseClient.from('schedules').select('*'),
                   supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(50)
@@ -184,7 +184,7 @@
           const file = input.files[0];
           if (!file) return;
 
-          const btnLabel = input.parentElement;
+          const btnLabel = document.getElementById('upload-btn-label');
           const originalText = btnLabel.innerText;
           btnLabel.innerText = "⏳ ストレージへアップロード中...";
 
@@ -228,6 +228,7 @@
               alert("画像のアップロードに失敗しました: " + (err.message || err));
           } finally {
               btnLabel.innerText = originalText;
+              input.value = ""; // 入力をリセットして連続選択できるようにする
           }
       }
 
@@ -838,10 +839,11 @@
             <div id="edit-controls" style="display:none; margin-bottom:12px; background: #fff3cd; padding: 15px; border-radius: 6px; border:1px solid #ffeeba;">
                 <button class="tab-add-btn" onclick="addNewFactory()">＋ 大枠のエリア（工場）を新規追加</button>
                 
-                <label class="tab-add-btn btn-secondary" style="margin-left:10px; cursor:pointer;">
+                <!-- 修正：for属性とid="upload-btn-label"を追加 -->
+                <label for="factory-image-uploader" class="tab-add-btn btn-secondary" style="margin-left:10px; cursor:pointer;" id="upload-btn-label">
                     🖼️ この大枠の背景画像をファイル選択してアップロード
-                    <input type="file" id="factory-image-uploader" accept="image/*" style="display:none;" onchange="handleImageUpload(this)">
                 </label>
+                <input type="file" id="factory-image-uploader" accept="image/*" style="display:none;" onchange="handleImageUpload(this)">
                 
                 <button class="tab-add-btn btn-danger" style="margin-left:10px;" onclick="deleteCurrentFactory()">✖ この大枠を削除</button>
                 <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】画像上の白地をドラッグすると新しい清掃枠（四角）が作れます。</div>
