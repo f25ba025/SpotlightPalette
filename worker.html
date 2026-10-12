@@ -5,13 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>スポットライトパレット - 従業員用</title>
 
-    <!-- 修正：Supabase SDK の正しいCDN読み込み -->
+    <!-- Supabase SDK の読み込み -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
       var SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
       var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
       
-      // 正しく初期化されるかチェック
       var supabaseClient = null;
       try {
           if (window.supabase) {
@@ -52,7 +51,7 @@
           try {
               const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
                   supabaseClient.from('users').select('*'),
-                  supabaseClient.from('factories').select('*'),
+                  supabaseClient.from('factories').select('*').order('created_at', { ascending: true }),
                   supabaseClient.from('areas').select('*'),
                   supabaseClient.from('schedules').select('*'),
                   supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(20)
@@ -217,31 +216,26 @@
       }
 
       function renderCanvas() {
-          const wrapper = document.getElementById('emp-canvas-parent');
           const svg = document.getElementById('emp-svg');
+          const imgEl = document.getElementById('emp-bg-image');
           svg.innerHTML = '';
 
           const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
           if (currentFac && currentFac.image) {
-              wrapper.style.backgroundImage = `url('${currentFac.image}')`;
+              imgEl.src = currentFac.image;
+              imgEl.style.display = "block";
           } else {
-              wrapper.style.backgroundImage = "none";
+              imgEl.src = "";
+              imgEl.style.display = "none";
           }
 
           const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
           filtered.forEach(area => {
-              let shape;
-              if (area.type === "polygon" && area.points && area.points.length > 0) {
-                  shape = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-                  const pointsAttr = area.points.map(p => `${p.x}%,${p.y}%`).join(" ");
-                  shape.setAttribute("points", pointsAttr);
-              } else {
-                  shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-                  shape.setAttribute("x", (area.x || 0) + "%");
-                  shape.setAttribute("y", (area.y || 0) + "%");
-                  shape.setAttribute("width", (area.w || 0) + "%");
-                  shape.setAttribute("height", (area.h || 0) + "%");
-              }
+              let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+              shape.setAttribute("x", (area.x || 0) + "%");
+              shape.setAttribute("y", (area.y || 0) + "%");
+              shape.setAttribute("width", (area.w || 0) + "%");
+              shape.setAttribute("height", (area.h || 0) + "%");
 
               const isCleaned = area.status === 'cleaned';
               shape.setAttribute("fill", isCleaned ? "rgba(16, 124, 65, 0.4)" : "rgba(216, 59, 1, 0.4)");
@@ -269,6 +263,7 @@
           selectedAreaId = area.id;
           document.getElementById('modal-area-name').innerText = area.name;
           document.getElementById('modal-area-status').innerText = area.status === 'cleaned' ? '🟢 完了' : '🔴 未清掃';
+          document.getElementById('modal-area-points').innerText = `+${area.score || 100} pt`;
           
           const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
           const todayKey = days[new Date().getDay()] === 'Sun' || days[new Date().getDay()] === 'Sat' ? 'Mon' : days[new Date().getDay()];
@@ -289,6 +284,7 @@
           const area = (appData.areas || []).find(a => a.id === selectedAreaId);
           const userId = document.getElementById('emp-user-select').value;
           const user = (appData.users || []).find(u => u.id === userId);
+          const earnedScore = area && area.score ? area.score : 100;
 
           const btn = document.getElementById('btn-complete');
           btn.innerText = "保存中...";
@@ -297,14 +293,14 @@
               await supabaseClient.from('areas').update({ status: 'cleaned' }).eq('id', selectedAreaId);
 
               if (user) {
-                  const newScore = (Number(user.score) || 0) + 100;
+                  const newScore = (Number(user.score) || 0) + earnedScore;
                   const newCount = (Number(user.count) || 0) + 1;
                   await supabaseClient.from('users').update({ score: newScore, count: newCount }).eq('id', userId);
               }
 
               const now = new Date();
               const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
-              const logMsg = `${user ? user.name : '作業者'} が 「${area ? area.name : ''}」 の清掃を完了しました！ (+100pt)`;
+              const logMsg = `${user ? user.name : '作業者'} が 「${area ? area.name : ''}」 の清掃を完了しました！ (+${earnedScore}pt)`;
               
               await supabaseClient.from('logs').insert([{
                   time: timeStr,
@@ -320,7 +316,7 @@
               console.error("保存エラー:", err);
               alert("保存に失敗しました。");
           } finally {
-              btn.innerText = "清掃完了を報告 (+100pt)";
+              btn.innerText = "清掃完了を報告";
           }
       }
 
@@ -404,13 +400,21 @@
             height: 240px;
             border: 1px solid #bbb;
             background-color: #eee;
-            background-size: 100% 100%;
-            background-repeat: no-repeat;
-            background-position: center;
             overflow: hidden;
             margin-bottom: 15px;
             border-radius: 6px;
             user-select: none;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .phone-bg-img {
+            position: absolute;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            z-index: 0;
+            pointer-events: none;
         }
         .phone-canvas-svg {
             position: absolute;
@@ -418,6 +422,7 @@
             left: 0;
             width: 100%;
             height: 100%;
+            z-index: 1;
         }
 
         .ranking-table { width: 100%; border-collapse: collapse; }
@@ -480,6 +485,7 @@
                 </div>
                 
                 <div class="phone-canvas-wrapper" id="emp-canvas-parent">
+                    <img id="emp-bg-image" class="phone-bg-img" alt="背景図面">
                     <svg class="phone-canvas-svg" id="emp-svg"></svg>
                 </div>
 
@@ -539,8 +545,9 @@
         <div class="modal-body">
             <h3 id="modal-area-name" style="margin-bottom:10px;">エリア名</h3>
             <p style="font-size:12px; margin-bottom:5px;">ステータス: <span id="modal-area-status" style="font-weight:bold;">-</span></p>
+            <p style="font-size:12px; margin-bottom:5px;">獲得ポイント: <span id="modal-area-points" style="font-weight:bold; color:var(--primary);">-</span></p>
             <p style="font-size:12px; margin-bottom:15px;">本日の担当: <span id="modal-area-assignee" style="font-weight:bold;">-</span></p>
-            <button class="btn" id="btn-complete" onclick="completeCleaning()">清掃完了を報告 (+100pt)</button>
+            <button class="btn" id="btn-complete" onclick="completeCleaning()">清掃完了を報告</button>
             <button class="btn btn-secondary" onclick="closeModal()">閉じる</button>
         </div>
     </div>
