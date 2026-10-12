@@ -179,7 +179,7 @@
           }
       }
 
-      // 🖼️ Supabase Storage を使用した背景画像のアップロード処理
+      // 🖼️ Supabase Storage を使用した背景画像のアップロード処理（既存画像削除機能付き）
       async function handleImageUpload(input) {
           const file = input.files[0];
           if (!file) return;
@@ -189,25 +189,39 @@
           btnLabel.innerText = "⏳ ストレージへアップロード中...";
 
           try {
+              const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
+              
+              if (currentFac && currentFac.image) {
+                  try {
+                      const urlObj = new URL(currentFac.image);
+                      const pathSegments = urlObj.pathname.split('/');
+                      const fileNameFromUrl = pathSegments[pathSegments.length - 1];
+                      if (fileNameFromUrl) {
+                          await supabaseClient.storage
+                              .from('factory-maps')
+                              .remove([fileNameFromUrl]);
+                      }
+                  } catch (delErr) {
+                      console.warn("既存画像の削除に失敗しました（継続します）:", delErr);
+                  }
+              }
+
               const fileExt = file.name.split('.').pop();
               const fileName = `${currentFactoryId}_${Date.now()}.${fileExt}`;
               const filePath = `${fileName}`;
 
-              // 1. Supabase Storage の 'factory-maps' バケットへアップロード
               const { error: uploadError } = await supabaseClient.storage
                   .from('factory-maps')
                   .upload(filePath, file, { upsert: true });
 
               if (uploadError) throw uploadError;
 
-              // 2. アップロードしたファイルの公開URLを取得
               const { data: urlData } = supabaseClient.storage
                   .from('factory-maps')
                   .getPublicUrl(filePath);
 
               const publicImageUrl = urlData.publicUrl;
 
-              // 3. factories テーブルの image カラムにURLを保存
               const { error: updateError } = await supabaseClient
                   .from('factories')
                   .update({ image: publicImageUrl })
@@ -215,10 +229,8 @@
 
               if (updateError) throw updateError;
 
-              // 4. ローカルデータを更新して再描画
-              const factory = appData.factories.find(f => f.id === currentFactoryId);
-              if (factory) {
-                  factory.image = publicImageUrl;
+              if (currentFac) {
+                  currentFac.image = publicImageUrl;
               }
               renderCanvas();
               alert("背景画像がStorageに保存され、マップが更新されました！");
@@ -228,7 +240,7 @@
               alert("画像のアップロードに失敗しました: " + (err.message || err));
           } finally {
               btnLabel.innerText = originalText;
-              input.value = ""; // 入力をリセットして連続選択できるようにする
+              input.value = ""; 
           }
       }
 
@@ -265,28 +277,34 @@
           const canvas = document.getElementById('map-canvas');
           const svgLayer = document.getElementById('map-svg-layer');
           const interactorContainer = document.getElementById('interactor-container');
+          const imgEl = document.getElementById('map-bg-image');
           
           svgLayer.innerHTML = ''; interactorContainer.innerHTML = '';
           
           const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
           if (currentFac && currentFac.image) {
-              canvas.style.backgroundImage = `url('${currentFac.image}')`;
+              imgEl.src = currentFac.image;
+              imgEl.style.display = "block";
           } else {
-              canvas.style.backgroundImage = "none";
+              imgEl.src = "";
+              imgEl.style.display = "none";
           }
 
           const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
           filtered.forEach(area => {
+              const isCleaned = area.status === 'cleaned';
+              const fillColor = isCleaned ? "rgba(16, 124, 65, 0.35)" : "rgba(216, 59, 1, 0.35)";
+              const strokeColor = isCleaned ? "var(--success)" : "var(--accent)";
+              const strokeWidth = area.id === selectedAreaId ? "3" : "1.5";
+
               let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
               shape.setAttribute("x", area.x + "%");
               shape.setAttribute("y", area.y + "%");
               shape.setAttribute("width", area.w + "%");
               shape.setAttribute("height", area.h + "%");
-
-              const isCleaned = area.status === 'cleaned';
-              shape.setAttribute("fill", isCleaned ? "rgba(16, 124, 65, 0.35)" : "rgba(216, 59, 1, 0.35)");
-              shape.setAttribute("stroke", isCleaned ? "var(--success)" : "var(--accent)");
-              shape.setAttribute("stroke-width", area.id === selectedAreaId ? "3" : "1.5");
+              shape.setAttribute("fill", fillColor);
+              shape.setAttribute("stroke", strokeColor);
+              shape.setAttribute("stroke-width", strokeWidth);
               svgLayer.appendChild(shape);
 
               const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -342,11 +360,12 @@
       }
 
       async function addNewFactory() {
-          const count = (appData.factories || []).length + 1;
-          const name = "第" + count + "工場";
+          const inputName = prompt("新規追加する工場名（大枠エリア名）を入力してください:", "第" + ((appData.factories || []).length + 1) + "工場");
+          if (!inputName || !inputName.trim()) return;
+
           const id = "fac_" + Date.now();
+          const newFac = { id: id, name: inputName.trim(), image: "" };
           
-          const newFac = { id: id, name: name, image: "" };
           const { error } = await supabaseClient.from('factories').insert([newFac]);
           if (!error) {
               if (!appData.factories) appData.factories = [];
@@ -374,7 +393,7 @@
       function setupCanvasDrawing() {
           const canvas = document.getElementById('map-canvas');
           canvas.addEventListener('mousedown', (e) => {
-              if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer')) return;
+              if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer' && !e.target.id.includes('map-bg-image'))) return;
               isDrawing = true;
               const rect = canvas.getBoundingClientRect();
               startXPercent = ((e.clientX - rect.left) / rect.width) * 100;
@@ -425,7 +444,8 @@
                       w: w,
                       h: h,
                       points: [],
-                      status: "not-cleaned"
+                      status: "not-cleaned",
+                      score: 100
                   };
                   
                   await supabaseClient.from('areas').insert([newArea]);
@@ -495,7 +515,10 @@
       function selectArea(id) {
           selectedAreaId = id; const area = (appData.areas || []).find(a => a.id === id); if (!area) return;
           document.getElementById('no-select-hint').style.display = 'none'; document.getElementById('property-form').style.display = 'block';
-          document.getElementById('prop-name').value = area.name; document.getElementById('prop-status').value = area.status; renderCanvas();
+          document.getElementById('prop-name').value = area.name; 
+          document.getElementById('prop-status').value = area.status; 
+          document.getElementById('prop-score').value = area.score || 100;
+          renderCanvas();
       }
 
       async function updateAreaName(val) { 
@@ -513,6 +536,14 @@
               renderCanvas(); renderAreaListView(); 
           } 
       }
+
+      async function updateAreaScore(val) {
+          if (selectedAreaId) {
+              const numScore = parseInt(val) || 0;
+              appData.areas.find(a => a.id === selectedAreaId).score = numScore;
+              await supabaseClient.from('areas').update({ score: numScore }).eq('id', selectedAreaId);
+          }
+      }
       
       async function deleteSelectedArea() {
           if (!selectedAreaId || !confirm("削除しますか？")) return;
@@ -529,7 +560,7 @@
           const ul = document.getElementById('pc-area-list-view'); ul.innerHTML = '';
           const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
           if (filtered.length === 0) { ul.innerHTML = "<li style='color:#999; font-size:12px;'>登録エリアはありません。</li>"; return; }
-          filtered.forEach(area => { const li = document.createElement('li'); li.innerHTML = `・${area.name} (${area.status === 'cleaned' ? '<span style="color:green;">🟢完了</span>' : '<span style="color:orange;">🔴未清掃</span>'})`; ul.appendChild(li); });
+          filtered.forEach(area => { const li = document.createElement('li'); li.innerHTML = `・${area.name} (${area.status === 'cleaned' ? '<span style="color:green;">🟢完了</span>' : '<span style="color:orange;">🔴未清掃</span>'}) [${area.score || 100}pt]`; ul.appendChild(li); });
       }
 
       function renderScheduleTable() {
@@ -717,7 +748,7 @@
         .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         .grid-2 { display: grid; grid-template-columns: 2.2fr 1fr; gap: 25px; }
 
-        .factory-tabs { display: flex; gap: 5px; margin-bottom: 15px; border-bottom: 2px solid var(--border); }
+        .factory-tabs { display: flex; gap: 5px; margin-bottom: 15px; border-bottom: 2px solid var(--border); flex-wrap: wrap; }
         .tab-btn { padding: 8px 16px; border: 1px solid var(--border); border-bottom: none; background: #e0e0e0; cursor: pointer; font-size: 13px; font-weight: bold; border-radius: 4px 4px 0 0; }
         .tab-btn.active { background: white; border-bottom: 2px solid white; margin-bottom: -2px; color: var(--primary); }
         .tab-add-btn { padding: 6px 12px; background: #6b7280; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; margin-bottom: 10px; display: inline-block; }
@@ -728,14 +759,23 @@
             height: 480px;
             border: 2px dashed #ccc;
             background-color: #f0f0f0;
-            background-size: 100% 100%;
-            background-repeat: no-repeat;
-            background-position: center center;
             overflow: hidden;
             user-select: none;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
         .canvas-wrapper.edit-mode { border-color: var(--accent); background-color: #fafafa; }
         
+        .canvas-bg-img {
+            position: absolute;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            z-index: 0;
+            pointer-events: none;
+        }
+
         .canvas-svg {
             position: absolute;
             top: 0; left: 0; width: 100%; height: 100%; z-index: 1;
@@ -829,7 +869,7 @@
 
         <!-- 1. マップ・エリア画面 -->
         <div id="p-pc-area" class="pc-content app-page active">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
                 <div class="factory-tabs" id="factory-tabs-container"></div>
                 <div>
                     <button class="btn" id="mode-toggle-btn" style="width:auto; padding:8px 20px;" onclick="toggleEditMode()">🛠️ マップ編集モードに切り替える</button>
@@ -837,22 +877,24 @@
             </div>
 
             <div id="edit-controls" style="display:none; margin-bottom:12px; background: #fff3cd; padding: 15px; border-radius: 6px; border:1px solid #ffeeba;">
-                <button class="tab-add-btn" onclick="addNewFactory()">＋ 大枠のエリア（工場）を新規追加</button>
-                
-                <!-- 修正：for属性とid="upload-btn-label"を追加 -->
-                <label for="factory-image-uploader" class="tab-add-btn btn-secondary" style="margin-left:10px; cursor:pointer;" id="upload-btn-label">
-                    🖼️ この大枠の背景画像をファイル選択してアップロード
-                </label>
-                <input type="file" id="factory-image-uploader" accept="image/*" style="display:none;" onchange="handleImageUpload(this)">
-                
-                <button class="tab-add-btn btn-danger" style="margin-left:10px;" onclick="deleteCurrentFactory()">✖ この大枠を削除</button>
-                <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】画像上の白地をドラッグすると新しい清掃枠（四角）が作れます。</div>
+                <div>
+                    <button class="tab-add-btn" onclick="addNewFactory()">＋ 大枠のエリア（工場）を新規追加</button>
+                    
+                    <label for="factory-image-uploader" class="tab-add-btn btn-secondary" style="margin-left:10px; cursor:pointer;" id="upload-btn-label">
+                        🖼️ 背景画像を設定・更新
+                    </label>
+                    <input type="file" id="factory-image-uploader" accept="image/*" style="display:none;" onchange="handleImageUpload(this)">
+                    
+                    <button class="tab-add-btn btn-danger" style="margin-left:10px;" onclick="deleteCurrentFactory()">✖ この大枠を削除</button>
+                </div>
+                <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】図面上の白地をドラッグすると新しい清掃枠（四角形）が作れます。</div>
             </div>
 
             <div class="grid-2">
                 <div>
                     <div class="card" style="padding: 12px;">
                         <div class="canvas-wrapper" id="map-canvas">
+                            <img id="map-bg-image" class="canvas-bg-img" alt="マップ背景図面">
                             <svg class="canvas-svg" id="map-svg-layer"></svg>
                             <div class="editor-area-container" id="interactor-container"></div>
                         </div>
@@ -879,6 +921,10 @@
                                     <option value="not-cleaned">未清掃（橙半透明）</option>
                                     <option value="cleaned">完了（緑半透明）</option>
                                 </select>
+                            </div>
+                            <div class="form-group">
+                                <label>獲得ポイント（スコア）</label>
+                                <input type="number" id="prop-score" class="form-control" min="0" step="10" oninput="updateAreaScore(this.value)">
                             </div>
                             <button class="btn btn-danger" onclick="deleteSelectedArea()">選択中のエリア枠を削除</button>
                         </div>
