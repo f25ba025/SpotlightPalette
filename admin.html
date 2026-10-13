@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,609 +9,629 @@
     <!-- Supabase JS SDK の読み込み -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
-      var SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
-      var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
-      
-      var supabaseClient = null;
-      try {
-          if (window.supabase) {
-              supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-          } else {
-              console.error("Supabaseライブラリが読み込まれていません");
-          }
-      } catch (e) {
-          console.error("Supabase初期化エラー:", e);
-      }
+        var SUPABASE_URL = "https://rzqtrzlcqanmhjuimlvc.supabase.co";
+        var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ6cXRyemxjcWFubWhqdWltbHZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE0MDM3MTQsImV4cCI6MjEwNjk3OTcxNH0.LGCnGrU6oKHV8kCZ_zIATNLTU1T_lt1DERZNkNc4Ud0";
 
-      let appData = {
-          factories: [],
-          users: [],
-          areas: [],
-          schedules: {},
-          logs: []
-      };
-      let currentUser = null;
-      let currentFactoryId = "";
-      let selectedAreaId = null;
-      let isEditMode = false;
-      let isDrawing = false;
-      let startXPercent, startYPercent, activeDrawingSvg = null;
+        var supabaseClient = null;
+        try {
+            if (window.supabase) {
+                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            } else {
+                console.error("Supabaseライブラリが読み込まれていません");
+            }
+        } catch (e) {
+            console.error("Supabase初期化エラー:", e);
+        }
 
-      async function init() {
-          const savedUser = localStorage.getItem('spotlight_admin_user');
-          if (savedUser) {
-              currentUser = JSON.parse(savedUser);
-              document.getElementById('login-modal').style.display = 'none';
-          }
+        let appData = {
+            factories: [],
+            users: [],
+            areas: [],
+            schedules: {},
+            logs: []
+        };
+        let currentUser = null;
+        let currentFactoryId = "";
+        let selectedAreaId = null;
+        let isEditMode = false;
+        let isDrawing = false;
+        let startXPercent, startYPercent, activeDrawingSvg = null;
 
-          await loadFromSupabase();
-          
-          if (appData.factories && appData.factories.length > 0) {
-              currentFactoryId = appData.factories[0].id;
-          }
+        async function init() {
+            const savedUser = localStorage.getItem('spotlight_admin_user');
+            if (savedUser) {
+                currentUser = JSON.parse(savedUser);
+                document.getElementById('login-modal').style.display = 'none';
+            }
 
-          if (currentUser) {
-              setupDashboard();
-          }
-      }
+            await loadFromSupabase();
 
-      // 🔑 ログイン処理
-      async function handleLogin() {
-          const emailInput = document.getElementById('login-email-input').value.trim();
-          const errorMsg = document.getElementById('login-error-msg');
-          const submitBtn = document.getElementById('login-submit-btn');
+            if (appData.factories && appData.factories.length > 0) {
+                currentFactoryId = appData.factories[0].id;
+            }
 
-          if (!emailInput) {
-              errorMsg.innerText = "メールアドレスを入力してください。";
-              errorMsg.style.display = "block";
-              return;
-          }
+            if (currentUser) {
+                setupDashboard();
+            }
+        }
 
-          if (!supabaseClient) {
-              errorMsg.innerText = "データベースに接続されていません。";
-              errorMsg.style.display = "block";
-              return;
-          }
+        // 🔑 ログイン処理
+        async function handleLogin() {
+            const emailInput = document.getElementById('login-email-input').value.trim();
+            const errorMsg = document.getElementById('login-error-msg');
+            const submitBtn = document.getElementById('login-submit-btn');
 
-          submitBtn.innerText = "照合中...";
-          errorMsg.style.display = "none";
+            if (!emailInput) {
+                errorMsg.innerText = "メールアドレスを入力してください。";
+                errorMsg.style.display = "block";
+                return;
+            }
 
-          try {
-              const { data, error } = await supabaseClient
-                  .from('users')
-                  .select('*')
-                  .eq('email', emailInput)
-                  .maybeSingle();
+            if (!supabaseClient) {
+                errorMsg.innerText = "データベースに接続されていません。";
+                errorMsg.style.display = "block";
+                return;
+            }
 
-              if (error) throw error;
+            submitBtn.innerText = "照合中...";
+            errorMsg.style.display = "none";
 
-              if (data) {
-                  if (data.role !== "admin") {
-                      errorMsg.innerText = "アクセスエラー：管理者権限（admin）がありません。";
-                      errorMsg.style.display = "block";
-                      return;
-                  }
+            try {
+                const { data, error } = await supabaseClient
+                    .from('users')
+                    .select('*')
+                    .eq('email', emailInput)
+                    .maybeSingle();
 
-                  currentUser = data;
-                  localStorage.setItem('spotlight_admin_user', JSON.stringify(currentUser));
-                  document.getElementById('login-modal').style.display = 'none';
-                  
-                  await loadFromSupabase();
-                  setupDashboard();
-              } else {
-                  errorMsg.innerText = "登録されていないメールアドレスです。";
-                  errorMsg.style.display = "block";
-              }
-          } catch (e) {
-              console.error("ログインエラー:", e);
-              errorMsg.innerText = "通信エラーが発生しました。";
-              errorMsg.style.display = "block";
-          } finally {
-              submitBtn.innerText = "ログイン";
-          }
-      }
+                if (error) throw error;
 
-      // 🚪 ログアウト処理
-      function handleLogout() {
-          if (!confirm("ログアウトしますか？")) return;
-          localStorage.removeItem('spotlight_admin_user');
-          currentUser = null;
-          document.getElementById('login-modal').style.display = 'flex';
-          document.getElementById('login-email-input').value = '';
-          document.getElementById('login-user-disp').innerText = "ログインしていません";
-      }
+                if (data) {
+                    if (data.role !== "admin") {
+                        errorMsg.innerText = "アクセスエラー：管理者権限（admin）がありません。";
+                        errorMsg.style.display = "block";
+                        return;
+                    }
 
-      function setupDashboard() {
-          if (currentUser) {
-              document.getElementById('login-user-disp').innerText = `${currentUser.name} (${currentUser.role})`;
-              document.getElementById('account-info-detail').innerHTML = `
+                    currentUser = data;
+                    localStorage.setItem('spotlight_admin_user', JSON.stringify(currentUser));
+                    document.getElementById('login-modal').style.display = 'none';
+
+                    await loadFromSupabase();
+                    setupDashboard();
+                } else {
+                    errorMsg.innerText = "登録されていないメールアドレスです。";
+                    errorMsg.style.display = "block";
+                }
+            } catch (e) {
+                console.error("ログインエラー:", e);
+                errorMsg.innerText = "通信エラーが発生しました。";
+                errorMsg.style.display = "block";
+            } finally {
+                submitBtn.innerText = "ログイン";
+            }
+        }
+
+        // 🚪 ログアウト処理
+        function handleLogout() {
+            if (!confirm("ログアウトしますか？")) return;
+            localStorage.removeItem('spotlight_admin_user');
+            currentUser = null;
+            document.getElementById('login-modal').style.display = 'flex';
+            document.getElementById('login-email-input').value = '';
+            document.getElementById('login-user-disp').innerText = "ログインしていません";
+        }
+
+        function setupDashboard() {
+            if (currentUser) {
+                document.getElementById('login-user-disp').innerText = `${currentUser.name} (${currentUser.role})`;
+                document.getElementById('account-info-detail').innerHTML = `
                   <strong>名前:</strong> ${currentUser.name}<br>
                   <strong>ID:</strong> ${currentUser.id || '-'}<br>
                   <strong>Email:</strong> ${currentUser.email}<br>
                   <strong>権限:</strong> <span class="badge badge-admin">管理者 (admin)</span>
               `;
-          }
+            }
 
-          if (appData.factories && appData.factories.length > 0 && !appData.factories.some(f => f.id === currentFactoryId)) {
-              currentFactoryId = appData.factories[0].id;
-          }
-          renderTabs(); 
-          renderCanvas(); 
-          renderAreaListView(); 
-          renderScheduleTable(); 
-          renderUsersTable();
-          renderRankingsAndLogs(); 
-          setupCanvasDrawing();
-      }
+            if (appData.factories && appData.factories.length > 0 && !appData.factories.some(f => f.id === currentFactoryId)) {
+                currentFactoryId = appData.factories[0].id;
+            }
+            renderTabs();
+            renderCanvas();
+            renderAreaListView();
+            renderScheduleTable();
+            renderUsersTable();
+            renderRankingsAndLogs();
+            setupCanvasDrawing();
+        }
 
-      async function loadFromSupabase() {
-          if (!supabaseClient) return;
-          try {
-              const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
-                  supabaseClient.from('users').select('*'),
-                  supabaseClient.from('factories').select('*').order('created_at', { ascending: true }),
-                  supabaseClient.from('areas').select('*'),
-                  supabaseClient.from('schedules').select('*'),
-                  supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(50)
-              ]);
+        async function loadFromSupabase() {
+            if (!supabaseClient) return;
+            try {
+                const [resUsers, resFactories, resAreas, resSchedules, resLogs] = await Promise.all([
+                    supabaseClient.from('users').select('*'),
+                    supabaseClient.from('factories').select('*').order('created_at', { ascending: true }),
+                    supabaseClient.from('areas').select('*'),
+                    supabaseClient.from('schedules').select('*'),
+                    supabaseClient.from('logs').select('*').order('created_at', { ascending: false }).limit(50)
+                ]);
 
-              appData.users = resUsers.data || [];
-              appData.factories = resFactories.data || [];
-              
-              appData.areas = (resAreas.data || []).map(a => ({
-                  ...a,
-                  factoryId: a.factory_id
-              }));
+                appData.users = resUsers.data || [];
+                appData.factories = resFactories.data || [];
 
-              appData.schedules = {};
-              (resSchedules.data || []).forEach(s => {
-                  appData.schedules[s.area_id] = {
-                      Mon: s.mon || "",
-                      Tue: s.tue || "",
-                      Wed: s.wed || "",
-                      Thu: s.thu || "",
-                      Fri: s.fri || ""
-                  };
-              });
+                appData.areas = (resAreas.data || []).map(a => ({
+                    ...a,
+                    factoryId: a.factory_id
+                }));
 
-              appData.logs = resLogs.data || [];
-          } catch (e) {
-              console.error("データ取得エラー:", e);
-          }
-      }
+                appData.schedules = {};
+                (resSchedules.data || []).forEach(s => {
+                    appData.schedules[s.area_id] = {
+                        Mon: s.mon || "",
+                        Tue: s.tue || "",
+                        Wed: s.wed || "",
+                        Thu: s.thu || "",
+                        Fri: s.fri || ""
+                    };
+                });
 
-      // 🖼️ Supabase Storage を使用した背景画像のアップロード処理（既存画像削除機能付き）
-      async function handleImageUpload(input) {
-          const file = input.files[0];
-          if (!file) return;
+                appData.logs = resLogs.data || [];
+            } catch (e) {
+                console.error("データ取得エラー:", e);
+            }
+        }
 
-          const btnLabel = document.getElementById('upload-btn-label');
-          const originalText = btnLabel.innerText;
-          btnLabel.innerText = "⏳ ストレージへアップロード中...";
+        // 🖼️ Supabase Storage を使用した背景画像のアップロード処理（既存画像削除機能付き）
+        async function handleImageUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
 
-          try {
-              const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
-              
-              if (currentFac && currentFac.image) {
-                  try {
-                      const urlObj = new URL(currentFac.image);
-                      const pathSegments = urlObj.pathname.split('/');
-                      const fileNameFromUrl = pathSegments[pathSegments.length - 1];
-                      if (fileNameFromUrl) {
-                          await supabaseClient.storage
-                              .from('factory-maps')
-                              .remove([fileNameFromUrl]);
-                      }
-                  } catch (delErr) {
-                      console.warn("既存画像の削除に失敗しました（継続します）:", delErr);
-                  }
-              }
+            const btnLabel = document.getElementById('upload-btn-label');
+            const originalText = btnLabel.innerText;
+            btnLabel.innerText = "⏳ ストレージへアップロード中...";
 
-              const fileExt = file.name.split('.').pop();
-              const fileName = `${currentFactoryId}_${Date.now()}.${fileExt}`;
-              const filePath = `${fileName}`;
+            try {
+                const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
 
-              const { error: uploadError } = await supabaseClient.storage
-                  .from('factory-maps')
-                  .upload(filePath, file, { upsert: true });
+                if (currentFac && currentFac.image) {
+                    try {
+                        const urlObj = new URL(currentFac.image);
+                        const pathSegments = urlObj.pathname.split('/');
+                        const fileNameFromUrl = pathSegments[pathSegments.length - 1];
+                        if (fileNameFromUrl) {
+                            await supabaseClient.storage
+                                .from('factory-maps')
+                                .remove([fileNameFromUrl]);
+                        }
+                    } catch (delErr) {
+                        console.warn("既存画像の削除に失敗しました（継続します）:", delErr);
+                    }
+                }
 
-              if (uploadError) throw uploadError;
+                const fileExt = file.name.split('.').pop();
+                const fileName = `${currentFactoryId}_${Date.now()}.${fileExt}`;
+                const filePath = `${fileName}`;
 
-              const { data: urlData } = supabaseClient.storage
-                  .from('factory-maps')
-                  .getPublicUrl(filePath);
+                const { error: uploadError } = await supabaseClient.storage
+                    .from('factory-maps')
+                    .upload(filePath, file, { upsert: true });
 
-              const publicImageUrl = urlData.publicUrl;
+                if (uploadError) throw uploadError;
 
-              const { error: updateError } = await supabaseClient
-                  .from('factories')
-                  .update({ image: publicImageUrl })
-                  .eq('id', currentFactoryId);
+                const { data: urlData } = supabaseClient.storage
+                    .from('factory-maps')
+                    .getPublicUrl(filePath);
 
-              if (updateError) throw updateError;
+                const publicImageUrl = urlData.publicUrl;
 
-              if (currentFac) {
-                  currentFac.image = publicImageUrl;
-              }
-              renderCanvas();
-              alert("背景画像がStorageに保存され、マップが更新されました！");
+                const { error: updateError } = await supabaseClient
+                    .from('factories')
+                    .update({ image: publicImageUrl })
+                    .eq('id', currentFactoryId);
 
-          } catch (err) {
-              console.error("画像アップロードエラー:", err);
-              alert("画像のアップロードに失敗しました: " + (err.message || err));
-          } finally {
-              btnLabel.innerText = originalText;
-              input.value = ""; 
-          }
-      }
+                if (updateError) throw updateError;
 
-      function switchPcPage(pageId) {
-          document.querySelectorAll('.pc-content').forEach(p => p.classList.remove('active'));
-          document.querySelectorAll('.pc-nav-item').forEach(n => n.classList.remove('active'));
-          document.getElementById('p-pc-' + pageId).classList.add('active');
-          const activeNav = document.getElementById('t-pc-' + pageId);
-          activeNav.classList.add('active');
-          document.getElementById('page-title').innerText = activeNav.innerText;
+                if (currentFac) {
+                    currentFac.image = publicImageUrl;
+                }
+                renderCanvas();
+                alert("背景画像がStorageに保存され、マップが更新されました！");
 
-          if (pageId === 'users') renderUsersTable();
-          if (pageId === 'schedule') renderScheduleTable();
-          if (pageId === 'rank') renderRankingsAndLogs();
-      }
+            } catch (err) {
+                console.error("画像アップロードエラー:", err);
+                alert("画像のアップロードに失敗しました: " + (err.message || err));
+            } finally {
+                btnLabel.innerText = originalText;
+                input.value = "";
+            }
+        }
 
-      function toggleEditMode() {
-          isEditMode = !isEditMode;
-          const btn = document.getElementById('mode-toggle-btn');
-          const editControls = document.getElementById('edit-controls');
-          const canvas = document.getElementById('map-canvas');
-          document.getElementById('view-side-card').style.display = isEditMode ? "none" : "block";
-          document.getElementById('edit-side-card').style.display = isEditMode ? "block" : "none";
-          
-          if (isEditMode) {
-              btn.innerText = "👁️ 通常閲覧モードに戻す"; btn.className = "btn btn-secondary"; editControls.style.display = "block"; canvas.classList.add('edit-mode');
-          } else {
-              btn.innerText = "🛠️ マップ編集モードに切り替える"; btn.className = "btn"; editControls.style.display = "none"; canvas.classList.remove('edit-mode'); selectedAreaId = null;
-          }
-          renderCanvas();
-      }
+        function switchPcPage(pageId) {
+            document.querySelectorAll('.pc-content').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.pc-nav-item').forEach(n => n.classList.remove('active'));
+            document.getElementById('p-pc-' + pageId).classList.add('active');
+            const activeNav = document.getElementById('t-pc-' + pageId);
+            activeNav.classList.add('active');
+            document.getElementById('page-title').innerText = activeNav.innerText;
 
-      function renderCanvas() {
-          const canvas = document.getElementById('map-canvas');
-          const svgLayer = document.getElementById('map-svg-layer');
-          const interactorContainer = document.getElementById('interactor-container');
-          const imgEl = document.getElementById('map-bg-image');
-          
-          svgLayer.innerHTML = ''; interactorContainer.innerHTML = '';
-          
-          const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
-          if (currentFac && currentFac.image) {
-              imgEl.src = currentFac.image;
-              imgEl.style.display = "block";
-          } else {
-              imgEl.src = "";
-              imgEl.style.display = "none";
-          }
+            if (pageId === 'users') renderUsersTable();
+            if (pageId === 'schedule') renderScheduleTable();
+            if (pageId === 'rank') renderRankingsAndLogs();
+        }
 
-          const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
-          filtered.forEach(area => {
-              const isCleaned = area.status === 'cleaned';
-              const fillColor = isCleaned ? "rgba(16, 124, 65, 0.35)" : "rgba(216, 59, 1, 0.35)";
-              const strokeColor = isCleaned ? "var(--success)" : "var(--accent)";
-              const strokeWidth = area.id === selectedAreaId ? "3" : "1.5";
+        function toggleEditMode() {
+            isEditMode = !isEditMode;
+            const btn = document.getElementById('mode-toggle-btn');
+            const editControls = document.getElementById('edit-controls');
+            const canvas = document.getElementById('map-canvas');
+            document.getElementById('view-side-card').style.display = isEditMode ? "none" : "block";
+            document.getElementById('edit-side-card').style.display = isEditMode ? "block" : "none";
 
-              let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-              shape.setAttribute("x", area.x + "%");
-              shape.setAttribute("y", area.y + "%");
-              shape.setAttribute("width", area.w + "%");
-              shape.setAttribute("height", area.h + "%");
-              shape.setAttribute("fill", fillColor);
-              shape.setAttribute("stroke", strokeColor);
-              shape.setAttribute("stroke-width", strokeWidth);
-              svgLayer.appendChild(shape);
+            if (isEditMode) {
+                btn.innerText = "👁️ 通常閲覧モードに戻す"; btn.className = "btn btn-secondary"; editControls.style.display = "block"; canvas.classList.add('edit-mode');
+            } else {
+                btn.innerText = "🛠️ マップ編集モードに切り替える"; btn.className = "btn"; editControls.style.display = "none"; canvas.classList.remove('edit-mode'); selectedAreaId = null;
+            }
+            renderCanvas();
+        }
 
-              const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-              text.setAttribute("x", (area.x + (area.w / 2)) + "%");
-              text.setAttribute("y", (area.y + (area.h / 2)) + "%");
-              text.setAttribute("text-anchor", "middle");
-              text.setAttribute("dominant-baseline", "central");
-              text.setAttribute("font-size", "11px");
-              text.setAttribute("font-weight", "bold");
-              text.setAttribute("fill", "#000");
-              text.textContent = area.name;
-              svgLayer.appendChild(text);
+        function renderCanvas() {
+            const canvas = document.getElementById('map-canvas');
+            const svgLayer = document.getElementById('map-svg-layer');
+            const interactorContainer = document.getElementById('interactor-container');
+            const imgEl = document.getElementById('map-bg-image');
 
-              const interactor = document.createElement('div');
-              interactor.className = `area-interactor ${isEditMode ? 'mode-edit' : ''} ${area.id === selectedAreaId ? 'edit-active' : ''}`;
-              interactor.style.left = area.x + '%';
-              interactor.style.top = area.y + '%';
-              interactor.style.width = area.w + '%';
-              interactor.style.height = area.h + '%';
+            svgLayer.innerHTML = ''; interactorContainer.innerHTML = '';
 
-              if (isEditMode) {
-                  const handle = document.createElement('div');
-                  handle.className = 'resize-handle';
-                  handle.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); initResize(e, area); });
-                  interactor.appendChild(handle);
-              }
+            const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
+            if (currentFac && currentFac.image) {
+                imgEl.src = currentFac.image;
+                imgEl.style.display = "block";
+            } else {
+                imgEl.src = "";
+                imgEl.style.display = "none";
+            }
 
-              interactor.addEventListener('mousedown', (e) => {
-                  if (!isEditMode) return;
-                  e.stopPropagation(); selectArea(area.id); initDragMove(e, area);
-              });
+            const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
+            filtered.forEach(area => {
+                const isCleaned = area.status === 'cleaned';
+                const fillColor = isCleaned ? "rgba(16, 124, 65, 0.35)" : "rgba(216, 59, 1, 0.35)";
+                const strokeColor = isCleaned ? "var(--success)" : "var(--accent)";
+                const strokeWidth = area.id === selectedAreaId ? "3" : "1.5";
 
-              interactorContainer.appendChild(interactor);
-          });
-      }
+                let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                shape.setAttribute("x", area.x + "%");
+                shape.setAttribute("y", area.y + "%");
+                shape.setAttribute("width", area.w + "%");
+                shape.setAttribute("height", area.h + "%");
+                shape.setAttribute("fill", fillColor);
+                shape.setAttribute("stroke", strokeColor);
+                shape.setAttribute("stroke-width", strokeWidth);
+                svgLayer.appendChild(shape);
 
-      function renderTabs() {
-          const container = document.getElementById('factory-tabs-container');
-          container.innerHTML = '';
-          (appData.factories || []).forEach(f => {
-              const btn = document.createElement('button');
-              btn.className = `tab-btn ${f.id === currentFactoryId ? 'active' : ''}`;
-              btn.innerText = f.name;
-              btn.onclick = async () => {
-                  currentFactoryId = f.id; selectedAreaId = null;
-                  document.getElementById('property-form').style.display = 'none';
-                  document.getElementById('no-select-hint').style.display = 'block';
-                  await loadFromSupabase();
-                  renderTabs(); renderCanvas(); renderAreaListView();
-              };
-              container.appendChild(btn);
-          });
-      }
+                const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                text.setAttribute("x", (area.x + (area.w / 2)) + "%");
+                text.setAttribute("y", (area.y + (area.h / 2)) + "%");
+                text.setAttribute("text-anchor", "middle");
+                text.setAttribute("dominant-baseline", "central");
+                text.setAttribute("font-size", "11px");
+                text.setAttribute("font-weight", "bold");
+                text.setAttribute("fill", "#000");
+                text.textContent = area.name;
+                svgLayer.appendChild(text);
 
-      async function addNewFactory() {
-          const inputName = prompt("新規追加する工場名（大枠エリア名）を入力してください:", "第" + ((appData.factories || []).length + 1) + "工場");
-          if (!inputName || !inputName.trim()) return;
+                const interactor = document.createElement('div');
+                interactor.className = `area-interactor ${isEditMode ? 'mode-edit' : ''} ${area.id === selectedAreaId ? 'edit-active' : ''}`;
+                interactor.style.left = area.x + '%';
+                interactor.style.top = area.y + '%';
+                interactor.style.width = area.w + '%';
+                interactor.style.height = area.h + '%';
 
-          const id = "fac_" + Date.now();
-          const newFac = { id: id, name: inputName.trim(), image: "" };
-          
-          const { error } = await supabaseClient.from('factories').insert([newFac]);
-          if (!error) {
-              if (!appData.factories) appData.factories = [];
-              appData.factories.push(newFac);
-              currentFactoryId = id; 
-              renderTabs(); renderCanvas();
-          } else {
-              alert("工場の追加に失敗しました: " + error.message);
-          }
-      }
+                if (isEditMode) {
+                    const handle = document.createElement('div');
+                    handle.className = 'resize-handle';
+                    handle.addEventListener('mousedown', (e) => { e.stopPropagation(); e.preventDefault(); initResize(e, area); });
+                    interactor.appendChild(handle);
+                }
 
-      async function deleteCurrentFactory() {
-          if ((appData.factories || []).length <= 1) return alert("これ以上削除できません。");
-          if (!confirm("この大枠と、含まれる清掃区画をすべて削除しますか？")) return;
-          
-          await supabaseClient.from('areas').delete().eq('factory_id', currentFactoryId);
-          await supabaseClient.from('factories').delete().eq('id', currentFactoryId);
+                interactor.addEventListener('mousedown', (e) => {
+                    if (!isEditMode) return;
+                    e.stopPropagation(); selectArea(area.id); initDragMove(e, area);
+                });
 
-          appData.areas = (appData.areas || []).filter(a => a.factoryId !== currentFactoryId);
-          appData.factories = appData.factories.filter(f => f.id !== currentFactoryId);
-          currentFactoryId = appData.factories[0].id; selectedAreaId = null;
-          renderTabs(); renderCanvas(); renderAreaListView(); renderScheduleTable();
-      }
+                interactorContainer.appendChild(interactor);
+            });
+        }
 
-      function setupCanvasDrawing() {
-          const canvas = document.getElementById('map-canvas');
-          canvas.addEventListener('mousedown', (e) => {
-              if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer' && !e.target.id.includes('map-bg-image'))) return;
-              isDrawing = true;
-              const rect = canvas.getBoundingClientRect();
-              startXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-              startYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-              
-              activeDrawingSvg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-              activeDrawingSvg.setAttribute("fill", "rgba(216, 59, 1, 0.35)");
-              activeDrawingSvg.setAttribute("stroke", "var(--accent)");
-              activeDrawingSvg.setAttribute("stroke-dasharray", "4");
-              activeDrawingSvg.setAttribute("x", startXPercent + "%");
-              activeDrawingSvg.setAttribute("y", startYPercent + "%");
-              document.getElementById('map-svg-layer').appendChild(activeDrawingSvg);
-          });
+        function renderTabs() {
+            const container = document.getElementById('factory-tabs-container');
+            container.innerHTML = '';
+            (appData.factories || []).forEach(f => {
+                const btn = document.createElement('button');
+                btn.className = `tab-btn ${f.id === currentFactoryId ? 'active' : ''}`;
+                btn.innerText = f.name;
+                btn.onclick = async () => {
+                    currentFactoryId = f.id; selectedAreaId = null;
+                    document.getElementById('property-form').style.display = 'none';
+                    document.getElementById('no-select-hint').style.display = 'block';
+                    await loadFromSupabase();
+                    renderTabs(); renderCanvas(); renderAreaListView();
+                };
+                container.appendChild(btn);
+            });
+        }
 
-          window.addEventListener('mousemove', (e) => {
-              if (!isDrawing) return;
-              const rect = canvas.getBoundingClientRect();
-              const currentXPercent = Math.max(0, Math.min(((e.clientX - rect.left) / rect.width) * 100, 100));
-              const currentYPercent = Math.max(0, Math.min(((e.clientY - rect.top) / rect.height) * 100, 100));
-              
-              const x = Math.min(startXPercent, currentXPercent);
-              const y = Math.min(startYPercent, currentYPercent);
-              const w = Math.abs(startXPercent - currentXPercent);
-              const h = Math.abs(startYPercent - currentYPercent);
-              
-              activeDrawingSvg.setAttribute("x", x + "%"); activeDrawingSvg.setAttribute("y", y + "%");
-              activeDrawingSvg.setAttribute("width", w + "%"); activeDrawingSvg.setAttribute("height", h + "%");
-          });
+        async function addNewFactory() {
+            const inputName = prompt("新規追加する工場名（大枠エリア名）を入力してください:", "第" + ((appData.factories || []).length + 1) + "工場");
+            if (!inputName || !inputName.trim()) return;
 
-          window.addEventListener('mouseup', async () => {
-              if (!isDrawing) return;
-              isDrawing = false;
-              
-              const x = parseFloat(activeDrawingSvg.getAttribute("x"));
-              const y = parseFloat(activeDrawingSvg.getAttribute("y"));
-              const w = parseFloat(activeDrawingSvg.getAttribute("width")) || 0;
-              const h = parseFloat(activeDrawingSvg.getAttribute("height")) || 0;
-              
-              if (w > 2 && h > 2) {
-                  const newId = "room_" + Date.now();
-                  const newArea = {
-                      id: newId,
-                      factory_id: currentFactoryId,
-                      name: "新規清掃区画",
-                      type: "rect",
-                      x: x,
-                      y: y,
-                      w: w,
-                      h: h,
-                      points: [],
-                      status: "not-cleaned",
-                      score: 100
-                  };
-                  
-                  await supabaseClient.from('areas').insert([newArea]);
-                  await supabaseClient.from('schedules').insert([{ area_id: newId, mon: "", tue: "", wed: "", thu: "", fri: "" }]);
+            const id = "fac_" + Date.now();
+            const newFac = { id: id, name: inputName.trim(), image: "" };
 
-                  if (!appData.areas) appData.areas = [];
-                  appData.areas.push({ ...newArea, factoryId: currentFactoryId });
-                  if (!appData.schedules) appData.schedules = {};
-                  appData.schedules[newId] = { Mon: "", Tue: "", Wed: "", Thu: "", Fri: "" };
+            const { error } = await supabaseClient.from('factories').insert([newFac]);
+            if (!error) {
+                if (!appData.factories) appData.factories = [];
+                appData.factories.push(newFac);
+                currentFactoryId = id;
+                renderTabs(); renderCanvas();
+            } else {
+                alert("工場の追加に失敗しました: " + error.message);
+            }
+        }
 
-                  selectArea(newId);
-              }
-              if (activeDrawingSvg) activeDrawingSvg.remove();
-              activeDrawingSvg = null;
-              renderCanvas(); renderAreaListView(); renderScheduleTable();
-          });
-      }
+        async function deleteCurrentFactory() {
+            if ((appData.factories || []).length <= 1) return alert("これ以上削除できません。");
+            if (!confirm("この大枠と、含まれる清掃区画をすべて削除しますか？")) return;
 
-      function initDragMove(e, area) {
-          const canvas = document.getElementById('map-canvas');
-          const rect = canvas.getBoundingClientRect();
-          const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-          const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-          const startAreaX = area.x, startAreaY = area.y;
+            await supabaseClient.from('areas').delete().eq('factory_id', currentFactoryId);
+            await supabaseClient.from('factories').delete().eq('id', currentFactoryId);
 
-          function onMouseMove(mEvent) {
-              const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
-              const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
-              area.x = Math.max(0, Math.min(startAreaX + (currentMouseXPercent - startMouseXPercent), 100 - area.w));
-              area.y = Math.max(0, Math.min(startAreaY + (currentMouseYPercent - startMouseYPercent), 100 - area.h));
-              renderCanvas();
-          }
+            appData.areas = (appData.areas || []).filter(a => a.factoryId !== currentFactoryId);
+            appData.factories = appData.factories.filter(f => f.id !== currentFactoryId);
+            currentFactoryId = appData.factories[0].id; selectedAreaId = null;
+            renderTabs(); renderCanvas(); renderAreaListView(); renderScheduleTable();
+        }
 
-          async function onMouseUp() {
-              window.removeEventListener('mousemove', onMouseMove);
-              window.removeEventListener('mouseup', onMouseUp);
-              await supabaseClient.from('areas').update({ x: area.x, y: area.y }).eq('id', area.id);
-              renderCanvas();
-          }
-          window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
-      }
+        function setupCanvasDrawing() {
+            const canvas = document.getElementById('map-canvas');
+            canvas.addEventListener('mousedown', (e) => {
+                if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer' && !e.target.id.includes('map-bg-image'))) return;
+                isDrawing = true;
+                const rect = canvas.getBoundingClientRect();
+                startXPercent = ((e.clientX - rect.left) / rect.width) * 100;
+                startYPercent = ((e.clientY - rect.top) / rect.height) * 100;
 
-      function initResize(e, area) {
-          const canvas = document.getElementById('map-canvas');
-          const rect = canvas.getBoundingClientRect();
-          const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
-          const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
-          const startW = area.w, startH = area.h;
+                activeDrawingSvg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                activeDrawingSvg.setAttribute("fill", "rgba(216, 59, 1, 0.35)");
+                activeDrawingSvg.setAttribute("stroke", "var(--accent)");
+                activeDrawingSvg.setAttribute("stroke-dasharray", "4");
+                activeDrawingSvg.setAttribute("x", startXPercent + "%");
+                activeDrawingSvg.setAttribute("y", startYPercent + "%");
+                document.getElementById('map-svg-layer').appendChild(activeDrawingSvg);
+            });
 
-          function onMouseMove(mEvent) {
-              const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
-              const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
-              area.w = Math.max(2, Math.min(startW + (currentMouseXPercent - startMouseXPercent), 100 - area.x));
-              area.h = Math.max(2, Math.min(startH + (currentMouseYPercent - startMouseYPercent), 100 - area.y));
-              renderCanvas();
-          }
+            window.addEventListener('mousemove', (e) => {
+                if (!isDrawing) return;
+                const rect = canvas.getBoundingClientRect();
+                const currentXPercent = Math.max(0, Math.min(((e.clientX - rect.left) / rect.width) * 100, 100));
+                const currentYPercent = Math.max(0, Math.min(((e.clientY - rect.top) / rect.height) * 100, 100));
 
-          async function onMouseUp() {
-              window.removeEventListener('mousemove', onMouseMove);
-              window.removeEventListener('mouseup', onMouseUp);
-              await supabaseClient.from('areas').update({ w: area.w, h: area.h }).eq('id', area.id);
-              renderCanvas();
-          }
-          window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
-      }
+                const x = Math.min(startXPercent, currentXPercent);
+                const y = Math.min(startYPercent, currentYPercent);
+                const w = Math.abs(startXPercent - currentXPercent);
+                const h = Math.abs(startYPercent - currentYPercent);
 
-      function selectArea(id) {
-          selectedAreaId = id; const area = (appData.areas || []).find(a => a.id === id); if (!area) return;
-          document.getElementById('no-select-hint').style.display = 'none'; document.getElementById('property-form').style.display = 'block';
-          document.getElementById('prop-name').value = area.name; 
-          document.getElementById('prop-status').value = area.status; 
-          document.getElementById('prop-score').value = area.score || 100;
-          renderCanvas();
-      }
+                activeDrawingSvg.setAttribute("x", x + "%"); activeDrawingSvg.setAttribute("y", y + "%");
+                activeDrawingSvg.setAttribute("width", w + "%"); activeDrawingSvg.setAttribute("height", h + "%");
+            });
 
-      async function updateAreaName(val) { 
-          if (selectedAreaId) { 
-              appData.areas.find(a => a.id === selectedAreaId).name = val; 
-              await supabaseClient.from('areas').update({ name: val }).eq('id', selectedAreaId);
-              renderCanvas(); renderAreaListView(); renderScheduleTable(); 
-          } 
-      }
-      
-      async function updateAreaStatus(val) { 
-          if (selectedAreaId) { 
-              appData.areas.find(a => a.id === selectedAreaId).status = val; 
-              await supabaseClient.from('areas').update({ status: val }).eq('id', selectedAreaId);
-              renderCanvas(); renderAreaListView(); 
-          } 
-      }
+            window.addEventListener('mouseup', async () => {
+                if (!isDrawing) return;
+                isDrawing = false;
 
-      async function updateAreaScore(val) {
-          if (selectedAreaId) {
-              const numScore = parseInt(val) || 0;
-              appData.areas.find(a => a.id === selectedAreaId).score = numScore;
-              await supabaseClient.from('areas').update({ score: numScore }).eq('id', selectedAreaId);
-          }
-      }
-      
-      async function deleteSelectedArea() {
-          if (!selectedAreaId || !confirm("削除しますか？")) return;
-          await supabaseClient.from('areas').delete().eq('id', selectedAreaId);
-          await supabaseClient.from('schedules').delete().eq('area_id', selectedAreaId);
+                const x = parseFloat(activeDrawingSvg.getAttribute("x"));
+                const y = parseFloat(activeDrawingSvg.getAttribute("y"));
+                const w = parseFloat(activeDrawingSvg.getAttribute("width")) || 0;
+                const h = parseFloat(activeDrawingSvg.getAttribute("height")) || 0;
 
-          appData.areas = appData.areas.filter(a => a.id !== selectedAreaId); 
-          if (appData.schedules) delete appData.schedules[selectedAreaId];
-          selectedAreaId = null; document.getElementById('property-form').style.display = 'none'; document.getElementById('no-select-hint').style.display = 'block';
-          renderCanvas(); renderAreaListView(); renderScheduleTable();
-      }
+                if (w > 2 && h > 2) {
+                    const newId = "room_" + Date.now();
+                    const newArea = {
+                        id: newId,
+                        factory_id: currentFactoryId,
+                        name: "新規清掃区画",
+                        type: "rect",
+                        x: x,
+                        y: y,
+                        w: w,
+                        h: h,
+                        points: [],
+                        status: "not-cleaned",
+                        score: 100
+                    };
 
-      function renderAreaListView() {
-          const ul = document.getElementById('pc-area-list-view'); ul.innerHTML = '';
-          const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
-          if (filtered.length === 0) { ul.innerHTML = "<li style='color:#999; font-size:12px;'>登録エリアはありません。</li>"; return; }
-          filtered.forEach(area => { const li = document.createElement('li'); li.innerHTML = `・${area.name} (${area.status === 'cleaned' ? '<span style="color:green;">🟢完了</span>' : '<span style="color:orange;">🔴未清掃</span>'}) [${area.score || 100}pt]`; ul.appendChild(li); });
-      }
+                    await supabaseClient.from('areas').insert([newArea]);
+                    await supabaseClient.from('schedules').insert([{ area_id: newId, mon: "", tue: "", wed: "", thu: "", fri: "" }]);
 
-      function renderScheduleTable() {
-          const tbody = document.getElementById('schedule-table-body'); tbody.innerHTML = '';
-          (appData.areas || []).forEach(area => {
-              const fac = (appData.factories || []).find(f => f.id === area.factoryId);
-              const tr = document.createElement('tr');
-              const tdLabel = document.createElement('td'); tdLabel.innerHTML = `<strong>${area.name}</strong> <span style="font-size:11px; color:#777;">(${fac?fac.name:"?"})</span>`; tr.appendChild(tdLabel);
-              
-              ["Mon", "Tue", "Wed", "Thu", "Fri"].forEach(day => {
-                  const td = document.createElement('td'); const select = document.createElement('select'); select.className = 'form-control';
-                  const optEmpty = document.createElement('option'); optEmpty.value = ""; optEmpty.innerText = "- 未設定 -"; select.appendChild(optEmpty);
-                  
-                  (appData.users || []).forEach(u => { 
-                      const opt = document.createElement('option'); opt.value = u.id; opt.innerText = u.name; 
-                      if (appData.schedules?.[area.id]?.[day] === u.id) opt.selected = true; 
-                      select.appendChild(opt); 
-                  });
-                  
-                  select.onchange = async (e) => { 
-                      if (!appData.schedules) appData.schedules = {}; 
-                      if (!appData.schedules[area.id]) appData.schedules[area.id] = {}; 
-                      appData.schedules[area.id][day] = e.target.value; 
+                    if (!appData.areas) appData.areas = [];
+                    appData.areas.push({ ...newArea, factoryId: currentFactoryId });
+                    if (!appData.schedules) appData.schedules = {};
+                    appData.schedules[newId] = { Mon: "", Tue: "", Wed: "", Thu: "", Fri: "" };
 
-                      const dbColumn = day.toLowerCase(); 
-                      await supabaseClient.from('schedules').update({ [dbColumn]: e.target.value }).eq('area_id', area.id);
-                  };
-                  td.appendChild(select); tr.appendChild(td);
-              });
-              tbody.appendChild(tr);
-          });
-      }
+                    selectArea(newId);
+                }
+                if (activeDrawingSvg) activeDrawingSvg.remove();
+                activeDrawingSvg = null;
+                renderCanvas(); renderAreaListView(); renderScheduleTable();
+            });
+        }
 
-      function renderUsersTable() {
-          const tbody = document.getElementById('users-table-body');
-          if (!tbody) return;
-          tbody.innerHTML = '';
+        function initDragMove(e, area) {
+            const canvas = document.getElementById('map-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
+            const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
+            const startAreaX = area.x, startAreaY = area.y;
 
-          if (!appData.users || appData.users.length === 0) {
-              tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999;">ユーザーデータが取得されていません。</td></tr>';
-              return;
-          }
+            function onMouseMove(mEvent) {
+                const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
+                const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
+                area.x = Math.max(0, Math.min(startAreaX + (currentMouseXPercent - startMouseXPercent), 100 - area.w));
+                area.y = Math.max(0, Math.min(startAreaY + (currentMouseYPercent - startMouseYPercent), 100 - area.h));
+                renderCanvas();
+            }
 
-          appData.users.forEach(u => {
-              const tr = document.createElement('tr');
-              const roleBadge = u.role === 'admin' 
-                  ? '<span class="badge badge-admin">管理者 (admin)</span>' 
-                  : '<span class="badge badge-worker">作業者 (worker)</span>';
+            async function onMouseUp() {
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+                await supabaseClient.from('areas').update({ x: area.x, y: area.y }).eq('id', area.id);
+                renderCanvas();
+            }
+            window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
+        }
 
-              tr.innerHTML = `
+        function initResize(e, area) {
+            const canvas = document.getElementById('map-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
+            const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
+            const startW = area.w, startH = area.h;
+
+            function onMouseMove(mEvent) {
+                const currentMouseXPercent = ((mEvent.clientX - rect.left) / rect.width) * 100;
+                const currentMouseYPercent = ((mEvent.clientY - rect.top) / rect.height) * 100;
+                area.w = Math.max(2, Math.min(startW + (currentMouseXPercent - startMouseXPercent), 100 - area.x));
+                area.h = Math.max(2, Math.min(startH + (currentMouseYPercent - startMouseYPercent), 100 - area.y));
+                renderCanvas();
+            }
+
+            async function onMouseUp() {
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+                await supabaseClient.from('areas').update({ w: area.w, h: area.h }).eq('id', area.id);
+                renderCanvas();
+            }
+            window.addEventListener('mousemove', onMouseMove); window.addEventListener('mouseup', onMouseUp);
+        }
+
+        function selectArea(id) {
+            selectedAreaId = id; const area = (appData.areas || []).find(a => a.id === id); if (!area) return;
+            document.getElementById('no-select-hint').style.display = 'none'; document.getElementById('property-form').style.display = 'block';
+            document.getElementById('prop-name').value = area.name;
+            document.getElementById('prop-status').value = area.status;
+            document.getElementById('prop-score').value = area.score || 100;
+            // 🔽 ここから追加：URL、テストリンク、QRコードの生成
+            // ※ Vercelで実際に公開しているURL、またはローカルのパスに合わせて調整してください
+            const targetUrl = `${window.location.origin}/worker.html?area=${area.id}`;
+
+            // 1. テスト確認リンクの設定
+            const testLink = document.getElementById('prop-test-link');
+            testLink.href = targetUrl;
+
+            // 2. QRコード画像の生成（外部APIを利用）
+            const qrImg = document.getElementById('prop-qr-img');
+            const encodedUrl = encodeURIComponent(targetUrl);
+            // 無料かつ高速なQRコード生成API（QR Server）を使用
+            const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodedUrl}`;
+            qrImg.src = qrApiUrl;
+
+            // 3. ダウンロードリンクの設定
+            const downloadLink = document.getElementById('prop-qr-download');
+            downloadLink.href = qrApiUrl;
+            downloadLink.download = `${area.name}_QR.png`;
+            // ここまで追加
+            renderCanvas();
+        }
+
+        async function updateAreaName(val) {
+            if (selectedAreaId) {
+                appData.areas.find(a => a.id === selectedAreaId).name = val;
+                await supabaseClient.from('areas').update({ name: val }).eq('id', selectedAreaId);
+                renderCanvas(); renderAreaListView(); renderScheduleTable();
+            }
+        }
+
+        async function updateAreaStatus(val) {
+            if (selectedAreaId) {
+                appData.areas.find(a => a.id === selectedAreaId).status = val;
+                await supabaseClient.from('areas').update({ status: val }).eq('id', selectedAreaId);
+                renderCanvas(); renderAreaListView();
+            }
+        }
+
+        async function updateAreaScore(val) {
+            if (selectedAreaId) {
+                const numScore = parseInt(val) || 0;
+                appData.areas.find(a => a.id === selectedAreaId).score = numScore;
+                await supabaseClient.from('areas').update({ score: numScore }).eq('id', selectedAreaId);
+            }
+        }
+
+        async function deleteSelectedArea() {
+            if (!selectedAreaId || !confirm("削除しますか？")) return;
+            await supabaseClient.from('areas').delete().eq('id', selectedAreaId);
+            await supabaseClient.from('schedules').delete().eq('area_id', selectedAreaId);
+
+            appData.areas = appData.areas.filter(a => a.id !== selectedAreaId);
+            if (appData.schedules) delete appData.schedules[selectedAreaId];
+            selectedAreaId = null; document.getElementById('property-form').style.display = 'none'; document.getElementById('no-select-hint').style.display = 'block';
+            renderCanvas(); renderAreaListView(); renderScheduleTable();
+        }
+
+        function renderAreaListView() {
+            const ul = document.getElementById('pc-area-list-view'); ul.innerHTML = '';
+            const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
+            if (filtered.length === 0) { ul.innerHTML = "<li style='color:#999; font-size:12px;'>登録エリアはありません。</li>"; return; }
+            filtered.forEach(area => { const li = document.createElement('li'); li.innerHTML = `・${area.name} (${area.status === 'cleaned' ? '<span style="color:green;">🟢完了</span>' : '<span style="color:orange;">🔴未清掃</span>'}) [${area.score || 100}pt]`; ul.appendChild(li); });
+        }
+
+        function renderScheduleTable() {
+            const tbody = document.getElementById('schedule-table-body'); tbody.innerHTML = '';
+            (appData.areas || []).forEach(area => {
+                const fac = (appData.factories || []).find(f => f.id === area.factoryId);
+                const tr = document.createElement('tr');
+                const tdLabel = document.createElement('td'); tdLabel.innerHTML = `<strong>${area.name}</strong> <span style="font-size:11px; color:#777;">(${fac ? fac.name : "?"})</span>`; tr.appendChild(tdLabel);
+
+                ["Mon", "Tue", "Wed", "Thu", "Fri"].forEach(day => {
+                    const td = document.createElement('td'); const select = document.createElement('select'); select.className = 'form-control';
+                    const optEmpty = document.createElement('option'); optEmpty.value = ""; optEmpty.innerText = "- 未設定 -"; select.appendChild(optEmpty);
+
+                    (appData.users || []).forEach(u => {
+                        const opt = document.createElement('option'); opt.value = u.id; opt.innerText = u.name;
+                        if (appData.schedules?.[area.id]?.[day] === u.id) opt.selected = true;
+                        select.appendChild(opt);
+                    });
+
+                    select.onchange = async (e) => {
+                        if (!appData.schedules) appData.schedules = {};
+                        if (!appData.schedules[area.id]) appData.schedules[area.id] = {};
+                        appData.schedules[area.id][day] = e.target.value;
+
+                        const dbColumn = day.toLowerCase();
+                        await supabaseClient.from('schedules').update({ [dbColumn]: e.target.value }).eq('area_id', area.id);
+                    };
+                    td.appendChild(select); tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderUsersTable() {
+            const tbody = document.getElementById('users-table-body');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+
+            if (!appData.users || appData.users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#999;">ユーザーデータが取得されていません。</td></tr>';
+                return;
+            }
+
+            appData.users.forEach(u => {
+                const tr = document.createElement('tr');
+                const roleBadge = u.role === 'admin'
+                    ? '<span class="badge badge-admin">管理者 (admin)</span>'
+                    : '<span class="badge badge-worker">作業者 (worker)</span>';
+
+                tr.innerHTML = `
                   <td><code>${u.id || '-'}</code></td>
                   <td><strong>${u.name || '-'}</strong></td>
                   <td>${u.email || '-'}</td>
@@ -618,23 +639,23 @@
                   <td><strong>${(Number(u.score) || 0).toLocaleString()}</strong> pt</td>
                   <td>${Number(u.count) || 0} 回</td>
               `;
-              tbody.appendChild(tr);
-          });
-      }
+                tbody.appendChild(tr);
+            });
+        }
 
-      function renderRankingsAndLogs() {
-          const tbody = document.querySelector('#rank-table tbody'); tbody.innerHTML = '';
-          [...(appData.users || [])].sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((u, i) => {
-              const tr = document.createElement('tr'); tr.innerHTML = `<td>${i+1}</td><td>${u.name || '-'}</td><td>${(Number(u.score) || 0).toLocaleString()} pt</td><td>${u.count || 0}回</td>`; tbody.appendChild(tr);
-          });
-          const chatSpace = document.getElementById('pc-chat-space'); chatSpace.innerHTML = '';
-          [...(appData.logs || [])].reverse().forEach(log => {
-              const msg = document.createElement('div'); msg.className = 'chat-msg'; msg.innerHTML = `<strong>[リアルタイム同期]</strong> <span style="color:#5f6368; font-size:11px;">${log.time}</span><br>${log.msg}`; chatSpace.appendChild(msg);
-          });
-      }
+        function renderRankingsAndLogs() {
+            const tbody = document.querySelector('#rank-table tbody'); tbody.innerHTML = '';
+            [...(appData.users || [])].sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((u, i) => {
+                const tr = document.createElement('tr'); tr.innerHTML = `<td>${i + 1}</td><td>${u.name || '-'}</td><td>${(Number(u.score) || 0).toLocaleString()} pt</td><td>${u.count || 0}回</td>`; tbody.appendChild(tr);
+            });
+            const chatSpace = document.getElementById('pc-chat-space'); chatSpace.innerHTML = '';
+            [...(appData.logs || [])].reverse().forEach(log => {
+                const msg = document.createElement('div'); msg.className = 'chat-msg'; msg.innerHTML = `<strong>[リアルタイム同期]</strong> <span style="color:#5f6368; font-size:11px;">${log.time}</span><br>${log.msg}`; chatSpace.appendChild(msg);
+            });
+        }
 
-      window.onload = init;
-  </script>
+        window.onload = init;
+    </script>
 
     <style>
         :root {
@@ -651,18 +672,34 @@
             --accent: #d83b01;
         }
 
-        * { box-sizing: border-box; font-family: 'Segoe UI', Meiryo, sans-serif; margin: 0; padding: 0; }
-        body { background-color: var(--gray-bg); color: var(--dark); display: flex; min-height: 100vh; overflow-x: hidden; }
-        
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Meiryo, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--gray-bg);
+            color: var(--dark);
+            display: flex;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
         .login-overlay {
             position: fixed;
-            top: 0; left: 0; width: 100vw; height: 100vh;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
             background: rgba(17, 24, 39, 0.95);
             z-index: 9999;
             display: flex;
             justify-content: center;
             align-items: center;
         }
+
         .login-card {
             background: white;
             padding: 40px;
@@ -672,9 +709,26 @@
             box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3);
             text-align: center;
         }
-        .login-card h2 { color: var(--primary); margin-bottom: 8px; font-size: 22px; }
-        .login-card p { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
-        .login-error { color: var(--accent); font-size: 12px; margin-bottom: 12px; display: none; text-align: center; }
+
+        .login-card h2 {
+            color: var(--primary);
+            margin-bottom: 8px;
+            font-size: 22px;
+        }
+
+        .login-card p {
+            color: #6b7280;
+            font-size: 13px;
+            margin-bottom: 24px;
+        }
+
+        .login-error {
+            color: var(--accent);
+            font-size: 12px;
+            margin-bottom: 12px;
+            display: none;
+            text-align: center;
+        }
 
         aside {
             width: 260px;
@@ -687,19 +741,35 @@
             bottom: 0;
             left: 0;
             z-index: 100;
-            box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+            box-shadow: 2px 0 8px rgba(0, 0, 0, 0.15);
         }
-        
+
         .sidebar-brand {
             padding: 24px 20px;
             background: linear-gradient(135deg, #1f3a60, #2b579a);
             text-align: center;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
         }
-        .sidebar-brand h1 { font-size: 18px; font-weight: bold; color: white; letter-spacing: 0.5px; }
-        .sidebar-brand p { font-size: 11px; opacity: 0.8; margin-top: 4px; }
 
-        .sidebar-menu { flex: 1; padding: 15px 0; list-style: none; }
+        .sidebar-brand h1 {
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            letter-spacing: 0.5px;
+        }
+
+        .sidebar-brand p {
+            font-size: 11px;
+            opacity: 0.8;
+            margin-top: 4px;
+        }
+
+        .sidebar-menu {
+            flex: 1;
+            padding: 15px 0;
+            list-style: none;
+        }
+
         .pc-nav-item {
             padding: 14px 20px;
             font-size: 13px;
@@ -711,24 +781,30 @@
             transition: all 0.2s ease;
             border-left: 4px solid transparent;
         }
-        .pc-nav-item:hover { color: white; background: #374151; }
+
+        .pc-nav-item:hover {
+            color: white;
+            background: #374151;
+        }
+
         .pc-nav-item.active {
             color: white;
             background: #111827;
             border-left: 4px solid var(--primary);
             font-weight: bold;
         }
-        
+
         .sidebar-footer {
             padding: 15px 20px;
             font-size: 11px;
             color: #9ca3af;
-            border-top: 1px solid rgba(255,255,255,0.1);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
             background: #111827;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
+
         .logout-btn {
             background: transparent;
             border: 1px solid #4b5563;
@@ -738,20 +814,93 @@
             cursor: pointer;
             font-size: 10px;
         }
-        .logout-btn:hover { color: white; border-color: white; }
 
-        main { flex: 1; margin-left: 260px; display: flex; flex-direction: column; min-height: 100vh; }
-        header { background: white; padding: 15px 30px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-        header h2 { font-size: 16px; color: #5f6368; font-weight: 600; }
-        .pc-content { padding: 30px; flex: 1; }
+        .logout-btn:hover {
+            color: white;
+            border-color: white;
+        }
 
-        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .grid-2 { display: grid; grid-template-columns: 2.2fr 1fr; gap: 25px; }
+        main {
+            flex: 1;
+            margin-left: 260px;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
 
-        .factory-tabs { display: flex; gap: 5px; margin-bottom: 15px; border-bottom: 2px solid var(--border); flex-wrap: wrap; }
-        .tab-btn { padding: 8px 16px; border: 1px solid var(--border); border-bottom: none; background: #e0e0e0; cursor: pointer; font-size: 13px; font-weight: bold; border-radius: 4px 4px 0 0; }
-        .tab-btn.active { background: white; border-bottom: 2px solid white; margin-bottom: -2px; color: var(--primary); }
-        .tab-add-btn { padding: 6px 12px; background: #6b7280; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; margin-bottom: 10px; display: inline-block; }
+        header {
+            background: white;
+            padding: 15px 30px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        header h2 {
+            font-size: 16px;
+            color: #5f6368;
+            font-weight: 600;
+        }
+
+        .pc-content {
+            padding: 30px;
+            flex: 1;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 2.2fr 1fr;
+            gap: 25px;
+        }
+
+        .factory-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid var(--border);
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            padding: 8px 16px;
+            border: 1px solid var(--border);
+            border-bottom: none;
+            background: #e0e0e0;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+            border-radius: 4px 4px 0 0;
+        }
+
+        .tab-btn.active {
+            background: white;
+            border-bottom: 2px solid white;
+            margin-bottom: -2px;
+            color: var(--primary);
+        }
+
+        .tab-add-btn {
+            padding: 6px 12px;
+            background: #6b7280;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: inline-block;
+        }
 
         .canvas-wrapper {
             position: relative;
@@ -765,8 +914,12 @@
             justify-content: center;
             align-items: center;
         }
-        .canvas-wrapper.edit-mode { border-color: var(--accent); background-color: #fafafa; }
-        
+
+        .canvas-wrapper.edit-mode {
+            border-color: var(--accent);
+            background-color: #fafafa;
+        }
+
         .canvas-bg-img {
             position: absolute;
             max-width: 100%;
@@ -778,51 +931,168 @@
 
         .canvas-svg {
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%; z-index: 1;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
         }
 
         .editor-area-container {
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none; z-index: 2;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 2;
         }
 
         .area-interactor {
-            position: absolute; pointer-events: auto; box-sizing: border-box;
-            border: 2px dashed transparent; cursor: pointer;
+            position: absolute;
+            pointer-events: auto;
+            box-sizing: border-box;
+            border: 2px dashed transparent;
+            cursor: pointer;
         }
-        .area-interactor.edit-active { border: 2px solid #00ff00; box-shadow: 0 0 8px #00ff00; }
-        .area-interactor.mode-edit { cursor: move; }
+
+        .area-interactor.edit-active {
+            border: 2px solid #00ff00;
+            box-shadow: 0 0 8px #00ff00;
+        }
+
+        .area-interactor.mode-edit {
+            cursor: move;
+        }
 
         .resize-handle {
-            position: absolute; width: 10px; height: 10px; background-color: #000;
-            border: 1px solid #fff; right: -5px; bottom: -5px; cursor: se-resize;
-            z-index: 5; display: none;
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background-color: #000;
+            border: 1px solid #fff;
+            right: -5px;
+            bottom: -5px;
+            cursor: se-resize;
+            z-index: 5;
+            display: none;
         }
-        .area-interactor.edit-active .resize-handle { display: block; }
 
-        .ranking-table { width: 100%; border-collapse: collapse; background: white; }
-        .ranking-table th, .ranking-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
-        .ranking-table th { background: #f8f9fa; font-weight: bold; color: #5f6368; }
+        .area-interactor.edit-active .resize-handle {
+            display: block;
+        }
 
-        .badge { display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
-        .badge-admin { background-color: #fee2e2; color: #991b1b; }
-        .badge-worker { background-color: #e0f2fe; color: #075985; }
+        .ranking-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+        }
 
-        .form-group { margin-bottom: 15px; text-align: left; }
-        .form-group label { display: block; font-weight: bold; margin-bottom: 6px; font-size: 12px; color: #5f6368; }
-        .form-control { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
-        .btn { display: inline-block; padding: 10px 16px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; text-align: center; width: 100%; font-weight: bold; }
-        .btn-danger { background: var(--accent); }
-        .btn-secondary { background: #6c757d; }
-        
-        .chat-space { border: 1px solid var(--border); border-radius: 6px; background: #f1f3f4; padding: 15px; height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-        .chat-msg { background: white; border-left: 4px solid var(--primary); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 13px; }
-        
-        .app-page { display: none; }
-        .app-page.active { display: block; }
+        .ranking-table th,
+        .ranking-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        .ranking-table th {
+            background: #f8f9fa;
+            font-weight: bold;
+            color: #5f6368;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .badge-admin {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+
+        .badge-worker {
+            background-color: #e0f2fe;
+            color: #075985;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+            text-align: left;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: #5f6368;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 16px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            text-align: center;
+            width: 100%;
+            font-weight: bold;
+        }
+
+        .btn-danger {
+            background: var(--accent);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+        }
+
+        .chat-space {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #f1f3f4;
+            padding: 15px;
+            height: 280px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .chat-msg {
+            background: white;
+            border-left: 4px solid var(--primary);
+            padding: 10px 14px;
+            border-radius: 0 6px 6px 0;
+            font-size: 13px;
+        }
+
+        .app-page {
+            display: none;
+        }
+
+        .app-page.active {
+            display: block;
+        }
     </style>
 </head>
+
 <body>
 
     <!-- 🔐 ログインモーダル画面 -->
@@ -830,12 +1100,13 @@
         <div class="login-card">
             <h2>管理者ログイン</h2>
             <p>管理者権限のあるGoogleメールアドレスを入力してください。</p>
-            
+
             <div class="form-group">
                 <label>メールアドレス</label>
-                <input type="email" id="login-email-input" class="form-control" placeholder="admin@company.com" required>
+                <input type="email" id="login-email-input" class="form-control" placeholder="admin@company.com"
+                    required>
             </div>
-            
+
             <button class="btn" id="login-submit-btn" onclick="handleLogin()">ログイン</button>
             <div id="login-error-msg" class="login-error" style="margin-top:12px;"></div>
         </div>
@@ -869,25 +1140,32 @@
 
         <!-- 1. マップ・エリア画面 -->
         <div id="p-pc-area" class="pc-content app-page active">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
+            <div
+                style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
                 <div class="factory-tabs" id="factory-tabs-container"></div>
                 <div>
-                    <button class="btn" id="mode-toggle-btn" style="width:auto; padding:8px 20px;" onclick="toggleEditMode()">🛠️ マップ編集モードに切り替える</button>
+                    <button class="btn" id="mode-toggle-btn" style="width:auto; padding:8px 20px;"
+                        onclick="toggleEditMode()">🛠️ マップ編集モードに切り替える</button>
                 </div>
             </div>
 
-            <div id="edit-controls" style="display:none; margin-bottom:12px; background: #fff3cd; padding: 15px; border-radius: 6px; border:1px solid #ffeeba;">
+            <div id="edit-controls"
+                style="display:none; margin-bottom:12px; background: #fff3cd; padding: 15px; border-radius: 6px; border:1px solid #ffeeba;">
                 <div>
                     <button class="tab-add-btn" onclick="addNewFactory()">＋ 大枠のエリア（工場）を新規追加</button>
-                    
-                    <label for="factory-image-uploader" class="tab-add-btn btn-secondary" style="margin-left:10px; cursor:pointer;" id="upload-btn-label">
+
+                    <label for="factory-image-uploader" class="tab-add-btn btn-secondary"
+                        style="margin-left:10px; cursor:pointer;" id="upload-btn-label">
                         🖼️ 背景画像を設定・更新
                     </label>
-                    <input type="file" id="factory-image-uploader" accept="image/*" style="display:none;" onchange="handleImageUpload(this)">
-                    
-                    <button class="tab-add-btn btn-danger" style="margin-left:10px;" onclick="deleteCurrentFactory()">✖ この大枠を削除</button>
+                    <input type="file" id="factory-image-uploader" accept="image/*" style="display:none;"
+                        onchange="handleImageUpload(this)">
+
+                    <button class="tab-add-btn btn-danger" style="margin-left:10px;" onclick="deleteCurrentFactory()">✖
+                        この大枠を削除</button>
                 </div>
-                <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】図面上の白地をドラッグすると新しい清掃枠（四角形）が作れます。</div>
+                <div style="font-size:11px; margin-top:8px; color:var(--dark);">【操作方法】図面上の白地をドラッグすると新しい清掃枠（四角形）が作れます。
+                </div>
             </div>
 
             <div class="grid-2">
@@ -900,7 +1178,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div>
                     <div class="card" id="view-side-card">
                         <h3 style="margin-bottom:12px; color:var(--primary); font-size:14px;">現在の登録エリア状況</h3>
@@ -909,11 +1187,13 @@
 
                     <div class="card" id="edit-side-card" style="display:none; border-color:var(--accent);">
                         <h3 style="margin-bottom:12px; color:var(--accent); font-size:14px;">⚙️ エリア枠プロパティ編集</h3>
-                        <p style="color:#666; font-size:12px; margin-bottom:10px;" id="no-select-hint">図面上のエリア枠をクリックして選択してください。</p>
+                        <p style="color:#666; font-size:12px; margin-bottom:10px;" id="no-select-hint">
+                            図面上のエリア枠をクリックして選択してください。</p>
                         <div id="property-form" style="display:none;">
                             <div class="form-group">
                                 <label>エリア名称</label>
-                                <input type="text" id="prop-name" class="form-control" oninput="updateAreaName(this.value)">
+                                <input type="text" id="prop-name" class="form-control"
+                                    oninput="updateAreaName(this.value)">
                             </div>
                             <div class="form-group">
                                 <label>現在の5S状況</label>
@@ -924,8 +1204,30 @@
                             </div>
                             <div class="form-group">
                                 <label>獲得ポイント（スコア）</label>
-                                <input type="number" id="prop-score" class="form-control" min="0" step="10" oninput="updateAreaScore(this.value)">
+                                <input type="number" id="prop-score" class="form-control" min="0" step="10"
+                                    oninput="updateAreaScore(this.value)">
                             </div>
+                            <!-- 🔽 ここから追加：テストリンク & QRコード生成機能 -->
+                            <div
+                                style="background: #f8f9fa; padding: 12px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 15px;">
+                                <label style="margin-bottom: 8px; color: var(--primary);">📱 現場用QRコード・テスト</label>
+                                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                                    <a id="prop-test-link" href="#" target="_blank" class="btn btn-secondary"
+                                        style="font-size:11px; padding: 6px 10px; text-decoration:none; text-align:center; flex:1;">
+                                        🔗 テスト確認リンク
+                                    </a>
+                                </div>
+                                <div
+                                    style="text-align: center; background: white; padding: 10px; border-radius: 4px; border: 1px solid #ddd;">
+                                    <img id="prop-qr-img" src="" alt="QRコード"
+                                        style="width: 120px; height: 120px; display: block; margin: 0 auto 8px auto;">
+                                    <a id="prop-qr-download" href="#" download="qrcode.png"
+                                        style="font-size: 11px; color: var(--primary); text-decoration: underline;">
+                                        📥 QRコード画像をダウンロード
+                                    </a>
+                                </div>
+                            </div>
+                            <!-- ここまで追加 -->
                             <button class="btn btn-danger" onclick="deleteSelectedArea()">選択中のエリア枠を削除</button>
                         </div>
                     </div>
@@ -940,7 +1242,14 @@
                     <div class="card">
                         <h3 style="margin-bottom:15px; color:var(--primary); font-size:15px;">🏆 5S活動 個人スコア自動集計</h3>
                         <table class="ranking-table" id="rank-table" style="border: 1px solid var(--border);">
-                            <thead><tr><th>順位</th><th>氏名</th><th>合計スコア</th><th>当番完了回数</th></tr></thead>
+                            <thead>
+                                <tr>
+                                    <th>順位</th>
+                                    <th>氏名</th>
+                                    <th>合計スコア</th>
+                                    <th>当番完了回数</th>
+                                </tr>
+                            </thead>
                             <tbody></tbody>
                         </table>
                     </div>
@@ -959,7 +1268,16 @@
             <div class="card">
                 <h3 style="margin-bottom:15px; color:var(--primary); font-size:15px;">📅 エリア別・曜日別掃除当番設定マスター</h3>
                 <table class="ranking-table" style="border: 1px solid var(--border);">
-                    <thead><tr><th>対象エリア（大枠）</th><th>月曜日</th><th>火曜日</th><th>水曜日</th><th>木曜日</th><th>金曜日</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>対象エリア（大枠）</th>
+                            <th>月曜日</th>
+                            <th>火曜日</th>
+                            <th>水曜日</th>
+                            <th>木曜日</th>
+                            <th>金曜日</th>
+                        </tr>
+                    </thead>
                     <tbody id="schedule-table-body"></tbody>
                 </table>
             </div>
@@ -989,7 +1307,9 @@
         <div id="p-pc-setting" class="pc-content app-page">
             <div class="card" style="max-width:600px;">
                 <h3 style="margin-bottom:15px; color:var(--warning); font-size:15px;">⚙️ Google Chat 自動リマインド連携</h3>
-                <div class="form-group"><label>自動通知リマインドタイミング</label><select class="form-control"><option>当日 朝 07:45</option></select></div>
+                <div class="form-group"><label>自動通知リマインドタイミング</label><select class="form-control">
+                        <option>当日 朝 07:45</option>
+                    </select></div>
             </div>
         </div>
 
@@ -1003,4 +1323,5 @@
     </main>
 
 </body>
+
 </html>
