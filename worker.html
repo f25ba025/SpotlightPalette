@@ -29,10 +29,22 @@
         var currentUser = null;
 
         async function init() {
+            // 🔽 1. URLに area パラメータが含まれているか最初にチェックし、一時保存する
+            const urlParams = new URLSearchParams(window.location.search);
+            const targetAreaId = urlParams.get('area');
+            if (targetAreaId) {
+                localStorage.setItem('spotlight_pending_area', targetAreaId);
+            }
+
             const savedUser = localStorage.getItem('spotlight_user');
             if (savedUser) {
                 currentUser = JSON.parse(savedUser);
                 document.getElementById('login-overlay').style.display = 'none';
+            } else {
+                // ログインしていなければログイン画面を表示してここでストップ
+                document.getElementById('login-overlay').style.display = 'flex';
+                await loadFromSupabase();
+                return; 
             }
 
             await loadFromSupabase();
@@ -45,24 +57,9 @@
             if (currentUser) {
                 setupUserSession();
             }
-            // 🔽 ここから追加：URLのパラメータ（?area=room_xxx）をチェックする処理
-            const urlParams = new URLSearchParams(window.location.search);
-            const targetAreaId = urlParams.get('area');
 
-            if (targetAreaId) {
-                // 該当するエリアデータを探す
-                const targetArea = (appData.areas || []).find(a => a.id === targetAreaId);
-                if (targetArea) {
-                    // 工場マップの表示も、そのエリアが所属する工場に切り替える
-                    currentFactoryId = targetArea.factoryId;
-                    renderFactorySelect();
-                    renderCanvas();
-
-                    // 自動でそのエリアの清掃完了モーダルを開く
-                    openModal(targetArea);
-                }
-            }
-            // ここまで追加
+            // 🔽 2. ログイン済みの状態で、もし一時保存されたエリアIDがあればモーダルを開く
+            checkAndOpenPendingArea();
         }
 
         async function loadFromSupabase() {
@@ -117,6 +114,7 @@
                 .subscribe();
         }
 
+        // 🔑 ログイン処理
         async function handleLogin() {
             const emailInput = document.getElementById('login-email-input').value.trim();
             const errorMsg = document.getElementById('login-error-msg');
@@ -150,8 +148,13 @@
                     currentUser = data;
                     localStorage.setItem('spotlight_user', JSON.stringify(currentUser));
                     document.getElementById('login-overlay').style.display = 'none';
+
                     await loadFromSupabase();
                     setupUserSession();
+
+                    // 🔽 3. ログイン成功後、保留されていたエリアがあれば自動で開く
+                    checkAndOpenPendingArea();
+
                 } else {
                     errorMsg.innerText = "登録されていないメールアドレスです。";
                     errorMsg.style.display = "block";
@@ -162,6 +165,23 @@
                 errorMsg.style.display = "block";
             } finally {
                 submitBtn.innerText = "ログイン";
+            }
+        }
+
+        // 📌 保留されているエリアIDがあれば開いてクリアする関数
+        function checkAndOpenPendingArea() {
+            const pendingAreaId = localStorage.getItem('spotlight_pending_area');
+            if (!pendingAreaId) return;
+
+            // 使い終わったらすぐに削除しておく（何度も勝手に開かないようにするため）
+            localStorage.removeItem('spotlight_pending_area');
+
+            const targetArea = (appData.areas || []).find(a => a.id === pendingAreaId);
+            if (targetArea) {
+                currentFactoryId = targetArea.factoryId;
+                renderFactorySelect();
+                renderCanvas();
+                openModal(targetArea);
             }
         }
 
