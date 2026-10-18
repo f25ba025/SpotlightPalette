@@ -29,22 +29,42 @@
         var currentUser = null;
 
         async function init() {
-            // 🔽 1. URLに area パラメータが含まれているか最初にチェックし、一時保存する
+            // URLに area パラメータがあれば一時保存（既存のロジック）
             const urlParams = new URLSearchParams(window.location.search);
             const targetAreaId = urlParams.get('area');
             if (targetAreaId) {
                 localStorage.setItem('spotlight_pending_area', targetAreaId);
             }
 
-            const savedUser = localStorage.getItem('spotlight_user');
-            if (savedUser) {
-                currentUser = JSON.parse(savedUser);
-                document.getElementById('login-overlay').style.display = 'none';
+            // Supabase Authから現在のログインセッションを取得
+            const { data: { session }, error } = await supabaseClient.auth.getSession();
+
+            if (session && session.user) {
+                // Googleログイン済みのユーザーのメールアドレスを取得
+                const googleEmail = session.user.email;
+
+                // データベース（usersテーブル）から、このメールアドレスのユーザー情報を引く
+                const { data: userData, error: userError } = await supabaseClient
+                    .from('users')
+                    .select('*')
+                    .eq('email', googleEmail)
+                    .maybeSingle();
+
+                if (userData) {
+                    // 登録されているユーザーであればログイン成功！
+                    currentUser = userData;
+                    document.getElementById('login-overlay').style.display = 'none';
+                } else {
+                    // データベースに登録されていないメールアドレスの場合
+                    alert("このGoogleアカウント（" + googleEmail + "）はシステムに登録されていません。");
+                    await supabaseClient.auth.signOut(); // ログアウトさせる
+                    document.getElementById('login-overlay').style.display = 'flex';
+                    return;
+                }
             } else {
-                // ログインしていなければログイン画面を表示してここでストップ
+                // 未ログインの場合はログイン画面を表示
                 document.getElementById('login-overlay').style.display = 'flex';
-                await loadFromSupabase();
-                return; 
+                return;
             }
 
             await loadFromSupabase();
@@ -58,7 +78,6 @@
                 setupUserSession();
             }
 
-            // 🔽 2. ログイン済みの状態で、もし一時保存されたエリアIDがあればモーダルを開く
             checkAndOpenPendingArea();
         }
 
@@ -114,57 +133,31 @@
                 .subscribe();
         }
 
-        // 🔑 ログイン処理
-        async function handleLogin() {
-            const emailInput = document.getElementById('login-email-input').value.trim();
-            const errorMsg = document.getElementById('login-error-msg');
-            const submitBtn = document.getElementById('login-submit-btn');
-
-            if (!emailInput) {
-                errorMsg.innerText = "メールアドレスを入力してください。";
-                errorMsg.style.display = "block";
-                return;
-            }
-
+        // 🔑 Googleログインの実行
+        async function handleGoogleLogin() {
             if (!supabaseClient) {
-                errorMsg.innerText = "データベースに接続されていません。";
-                errorMsg.style.display = "block";
+                alert("データベースに接続されていません。");
                 return;
             }
-
-            submitBtn.innerText = "照合中...";
-            errorMsg.style.display = "none";
 
             try {
-                const { data, error } = await supabaseClient
-                    .from('users')
-                    .select('*')
-                    .eq('email', emailInput)
-                    .maybeSingle();
+                // Supabase AuthのGoogleログインを呼び出す
+                // ログイン成功後、元のページ（または指定のURL）にリダイレクトされる
+                const { data, error } = await supabaseClient.auth.signInWithOAuth({
+                    provider: 'google',
+                    options: {
+                        redirectTo: window.location.origin + window.location.pathname, // 現在のページに戻る
+                        queryParams: {
+                            prompt: 'select_account'
+                        }
+                    }
+                });
 
                 if (error) throw error;
-
-                if (data) {
-                    currentUser = data;
-                    localStorage.setItem('spotlight_user', JSON.stringify(currentUser));
-                    document.getElementById('login-overlay').style.display = 'none';
-
-                    await loadFromSupabase();
-                    setupUserSession();
-
-                    // 🔽 3. ログイン成功後、保留されていたエリアがあれば自動で開く
-                    checkAndOpenPendingArea();
-
-                } else {
-                    errorMsg.innerText = "登録されていないメールアドレスです。";
-                    errorMsg.style.display = "block";
-                }
-            } catch (e) {
-                console.error("ログインエラー:", e);
-                errorMsg.innerText = "通信エラーが発生しました。";
-                errorMsg.style.display = "block";
-            } finally {
-                submitBtn.innerText = "ログイン";
+            } catch (err) {
+                console.error("Googleログインエラー:", err);
+                document.getElementById('login-error-msg').innerText = "ログインに失敗しました: " + err.message;
+                document.getElementById('login-error-msg').style.display = "block";
             }
         }
 
@@ -652,21 +645,18 @@
             <div class="phone-header"><span>Spotlight Palette Mobile</span><span>🔋 100%</span></div>
 
             <!-- ログイン画面モーダル -->
-            <div id="login-overlay" class="login-overlay">
-                <h3 style="color:var(--primary); margin-bottom:10px;">従業員ログイン</h3>
-                <p style="font-size:12px; color:#666; margin-bottom:20px; text-align:center;">
-                    登録されているGoogleメールアドレスを入力してください。</p>
-                <div style="width:100%;">
-                    <div class="form-group">
-                        <label>メールアドレス</label>
-                        <input type="email" id="login-email-input" class="form-control"
-                            placeholder="example@company.com">
-                    </div>
-                    <button class="btn" id="login-submit-btn" onclick="handleLogin()">ログイン</button>
-                    <p id="login-error-msg"
-                        style="color:red; font-size:11px; margin-top:10px; text-align:center; display:none;"></p>
-                </div>
-            </div>
+<div id="login-overlay" class="login-overlay">
+    <h3 style="color:var(--primary); margin-bottom:10px;">従業員ログイン</h3>
+    <p style="font-size:12px; color:#666; margin-bottom:20px; text-align:center;">
+        お使いのGoogleアカウントでログインしてください。</p>
+    <div style="width:100%; text-align:center;">
+        <button class="btn" id="login-google-btn" onclick="handleGoogleLogin()" style="background:#4285F4; display:flex; align-items:center; justify-content:center; gap:8px;">
+            <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#fff" d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.9C6.2 7.1 8.9 5 12 5z"/><path fill="#fff" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"/><path fill="#fff" d="M5.3 14.7c-.2-.7-.4-1.5-.4-2.7s.2-2 .4-2.7L1.6 6.4C.6 8.4 0 10.6 0 13s.6 4.6 1.6 6.6l3.7-2.9z"/><path fill="#fff" d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5.3L1.6 15.6C3.5 19.4 7.4 23 12 23z"/></svg>
+            Googleアカウントでログイン
+        </button>
+        <p id="login-error-msg" style="color:red; font-size:11px; margin-top:10px; text-align:center; display:none;"></p>
+    </div>
+</div>
 
             <!-- エリアマップ画面 -->
             <div id="p-emp-area" class="phone-content active">
