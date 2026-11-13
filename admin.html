@@ -32,6 +32,8 @@
         };
         let currentUser = null;
         let currentFactoryId = "";
+        // ダッシュボード表示用の工場選択（工場管理画面の選択状態とは分離）
+        let dashboardFactoryId = "";
         let selectedAreaId = null;
         let isEditMode = false;
         let isDrawing = false;
@@ -144,6 +146,7 @@
             renderTabs();
             renderCanvas();
             renderAreaListView();
+            renderDashboard();
             renderScheduleTable();
             renderUsersTable();
             renderRankingsAndLogs();
@@ -252,16 +255,166 @@
         }
 
         function switchPcPage(pageId) {
+            // 工場管理を離れるときは編集モードを解除し、閲覧専用状態に戻す
+            if (pageId !== 'factory' && isEditMode) {
+                isEditMode = false;
+                const editControls = document.getElementById('edit-controls');
+                const canvas = document.getElementById('map-canvas');
+                const viewCard = document.getElementById('view-side-card');
+                const editCard = document.getElementById('edit-side-card');
+                const modeButton = document.getElementById('mode-toggle-btn');
+                if (editControls) editControls.style.display = 'none';
+                if (canvas) canvas.classList.remove('edit-mode');
+                if (viewCard) viewCard.style.display = 'block';
+                if (editCard) editCard.style.display = 'none';
+                if (modeButton) { modeButton.innerText = '🛠️ マップ編集モードに切り替える'; modeButton.className = 'btn'; }
+                selectedAreaId = null;
+                renderCanvas();
+            }
+
             document.querySelectorAll('.pc-content').forEach(p => p.classList.remove('active'));
             document.querySelectorAll('.pc-nav-item').forEach(n => n.classList.remove('active'));
-            document.getElementById('p-pc-' + pageId).classList.add('active');
+            const page = document.getElementById('p-pc-' + pageId);
             const activeNav = document.getElementById('t-pc-' + pageId);
+            if (!page || !activeNav) return;
+            page.classList.add('active');
             activeNav.classList.add('active');
             document.getElementById('page-title').innerText = activeNav.innerText;
 
+            if (pageId === 'dashboard') renderDashboard();
+            if (pageId === 'factory') { renderTabs(); renderCanvas(); renderAreaListView(); }
             if (pageId === 'users') renderUsersTable();
             if (pageId === 'schedule') renderScheduleTable();
             if (pageId === 'rank') renderRankingsAndLogs();
+            if (pageId === 'logs') renderActivityLogs();
+        }
+
+        function renderDashboard() {
+            const areas = appData.areas || [];
+            const cleaned = areas.filter(a => a.status === 'cleaned').length;
+            const notCleaned = areas.length - cleaned;
+            const rate = areas.length ? Math.round(cleaned / areas.length * 100) : 0;
+            document.getElementById('dash-area-count').textContent = areas.length;
+            document.getElementById('dash-cleaned-count').textContent = cleaned;
+            document.getElementById('dash-pending-count').textContent = notCleaned;
+            document.getElementById('dash-clean-rate').textContent = rate + '%';
+
+            const today = new Date();
+            const dayKeys = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const dayKey = dayKeys[today.getDay()];
+            const dayLabels = { Mon: '月曜日', Tue: '火曜日', Wed: '水曜日', Thu: '木曜日', Fri: '金曜日', Sat: '土曜日', Sun: '日曜日' };
+            const todayBox = document.getElementById('dash-today-duty');
+            if (['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(dayKey)) {
+                const assigned = areas.map(area => {
+                    const userId = appData.schedules?.[area.id]?.[dayKey];
+                    const user = (appData.users || []).find(u => u.id === userId);
+                    return user ? { area: area.name, user: user.name } : null;
+                }).filter(Boolean);
+                todayBox.innerHTML = assigned.length
+                    ? `<div class="duty-list">${assigned.map(item => `<div class="duty-item"><span>${escapeHtml(item.area)}</span><strong>${escapeHtml(item.user)}</strong></div>`).join('')}</div>`
+                    : `<p class="empty-state">${dayLabels[dayKey]}の清掃担当者は設定されていません。</p>`;
+            } else {
+                todayBox.innerHTML = `<p class="empty-state">${dayLabels[dayKey]}は平日の清掃当番設定対象外です。</p>`;
+            }
+            renderDashboardMap();
+            renderRecentActivity();
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+        }
+
+        function renderDashboardMap() {
+            const factorySelect = document.getElementById('dash-factory-select');
+            const factories = appData.factories || [];
+            if (!factories.some(f => f.id === dashboardFactoryId)) {
+                dashboardFactoryId = factories.length ? factories[0].id : '';
+            }
+            if (factorySelect) {
+                factorySelect.innerHTML = factories.map(f =>
+                    `<option value="${escapeHtml(f.id)}">${escapeHtml(f.name)}</option>`
+                ).join('');
+                factorySelect.value = dashboardFactoryId;
+                factorySelect.disabled = factories.length === 0;
+            }
+
+            const stage = document.getElementById('dash-map-stage');
+            const image = document.getElementById('dash-map-image');
+            const svg = document.getElementById('dash-map-svg');
+            const labels = document.getElementById('dash-map-labels');
+            if (!stage || !image || !svg || !labels) return;
+            const factory = factories.find(f => f.id === dashboardFactoryId);
+            svg.innerHTML = '';
+            labels.innerHTML = '';
+            if (!factory) {
+                image.style.display = 'none';
+                labels.innerHTML = '<p class="empty-state">工場が登録されていません。</p>';
+                return;
+            }
+            if (factory.image) {
+                image.style.display = 'block';
+                if (image.src !== factory.image) { image.onload = updateDashboardMapStageSize; image.src = factory.image; } else { updateDashboardMapStageSize(); }
+            } else {
+                image.removeAttribute('src');
+                image.style.display = 'none';
+            }
+            (appData.areas || []).filter(a => a.factoryId === factory.id).forEach(area => {
+                const cleaned = area.status === 'cleaned';
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', area.x + '%'); rect.setAttribute('y', area.y + '%');
+                rect.setAttribute('width', area.w + '%'); rect.setAttribute('height', area.h + '%');
+                rect.setAttribute('fill', cleaned ? 'rgba(16,124,65,.35)' : 'rgba(216,59,1,.35)');
+                rect.setAttribute('stroke', cleaned ? '#107c41' : '#d83b01');
+                rect.setAttribute('stroke-width', '1.5'); rect.setAttribute('vector-effect', 'non-scaling-stroke');
+                svg.appendChild(rect);
+                const label = document.createElement('div');
+                label.className = 'area-label'; label.textContent = area.name;
+                label.style.left = area.x + '%'; label.style.top = area.y + '%';
+                label.style.width = area.w + '%'; label.style.height = area.h + '%';
+                labels.appendChild(label);
+            });
+            const name = document.getElementById('dash-map-factory-name');
+            if (name) name.textContent = factory.name;
+        }
+
+        function changeDashboardFactory(factoryId) {
+            dashboardFactoryId = factoryId;
+            renderDashboardMap();
+        }
+
+        function updateDashboardMapStageSize() {
+            const wrapper = document.querySelector('.dashboard-map');
+            const stage = document.getElementById('dash-map-stage');
+            const image = document.getElementById('dash-map-image');
+            if (!wrapper || !stage) return;
+            if (!image || !image.naturalWidth || !image.naturalHeight) {
+                stage.style.width = '100%'; stage.style.height = '100%'; return;
+            }
+            const ratio = image.naturalWidth / image.naturalHeight;
+            let width = wrapper.clientWidth;
+            let height = width / ratio;
+            if (height > wrapper.clientHeight) { height = wrapper.clientHeight; width = height * ratio; }
+            stage.style.width = width + 'px';
+            stage.style.height = height + 'px';
+        }
+
+        window.addEventListener('resize', updateDashboardMapStageSize);
+
+        function renderRecentActivity() {
+            const target = document.getElementById('dash-recent-activity');
+            if (!target) return;
+            const logs = (appData.logs || []).slice(0, 5);
+            target.innerHTML = logs.length ? logs.map(log =>
+                `<div class="recent-log"><span class="recent-log-time">${escapeHtml(log.time || '')}</span><p>${escapeHtml(log.msg || '')}</p></div>`
+            ).join('') : '<p class="empty-state">まだ活動履歴がありません。</p>';
+        }
+
+        function renderActivityLogs() {
+            const target = document.getElementById('activity-log-list');
+            if (!target) return;
+            target.innerHTML = (appData.logs || []).map(log =>
+                `<div class="recent-log"><span class="recent-log-time">${escapeHtml(log.time || '')}</span><p>${escapeHtml(log.msg || '')}</p></div>`
+            ).join('') || '<p class="empty-state">まだ活動履歴がありません。</p>';
         }
 
         function toggleEditMode() {
@@ -280,21 +433,72 @@
             renderCanvas();
         }
 
-        function renderCanvas() {
+        // 背景画像の縦横比に合わせてステージのサイズを調整
+        function updateMapStageSize() {
             const canvas = document.getElementById('map-canvas');
+            const stage = document.getElementById('map-stage');
+            const img = document.getElementById('map-bg-image');
+
+            if (!canvas || !stage) return;
+
+            const canvasWidth = canvas.clientWidth;
+            const canvasHeight = canvas.clientHeight;
+
+            // 背景画像が設定されていない場合
+            if (!img || !img.naturalWidth || !img.naturalHeight) {
+                stage.style.width = '100%';
+                stage.style.height = '100%';
+                return;
+            }
+
+            // 背景画像の縦横比
+            const imageRatio = img.naturalWidth / img.naturalHeight;
+
+            // キャンバスに収まる最大サイズを計算
+            let stageWidth = canvasWidth;
+            let stageHeight = stageWidth / imageRatio;
+
+            if (stageHeight > canvasHeight) {
+                stageHeight = canvasHeight;
+                stageWidth = stageHeight * imageRatio;
+            }
+
+            stage.style.width = `${stageWidth}px`;
+            stage.style.height = `${stageHeight}px`;
+        }
+
+        // ウィンドウサイズが変わったときに再計算
+        window.addEventListener('resize', updateMapStageSize);
+
+        function renderCanvas() {
             const svgLayer = document.getElementById('map-svg-layer');
             const interactorContainer = document.getElementById('interactor-container');
             const imgEl = document.getElementById('map-bg-image');
 
-            svgLayer.innerHTML = ''; interactorContainer.innerHTML = '';
+            svgLayer.innerHTML = '';
+            interactorContainer.innerHTML = '';
 
             const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
+
             if (currentFac && currentFac.image) {
-                imgEl.src = currentFac.image;
                 imgEl.style.display = "block";
+
+                // 画像が切り替わった場合だけ読み込み直す
+                if (imgEl.src !== currentFac.image) {
+                    imgEl.onload = () => {
+                        updateMapStageSize();
+                        renderCanvas();
+                    };
+
+                    imgEl.src = currentFac.image;
+                } else {
+                    updateMapStageSize();
+                }
             } else {
-                imgEl.src = "";
+                imgEl.onload = null;
+                imgEl.removeAttribute('src');
                 imgEl.style.display = "none";
+                updateMapStageSize();
             }
 
             const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
@@ -312,18 +516,10 @@
                 shape.setAttribute("fill", fillColor);
                 shape.setAttribute("stroke", strokeColor);
                 shape.setAttribute("stroke-width", strokeWidth);
+                shape.setAttribute("vector-effect", "non-scaling-stroke");
                 svgLayer.appendChild(shape);
 
-                const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-                text.setAttribute("x", (area.x + (area.w / 2)) + "%");
-                text.setAttribute("y", (area.y + (area.h / 2)) + "%");
-                text.setAttribute("text-anchor", "middle");
-                text.setAttribute("dominant-baseline", "central");
-                text.setAttribute("font-size", "11px");
-                text.setAttribute("font-weight", "bold");
-                text.setAttribute("fill", "#000");
-                text.textContent = area.name;
-                svgLayer.appendChild(text);
+
 
                 const interactor = document.createElement('div');
                 interactor.className = `area-interactor ${isEditMode ? 'mode-edit' : ''} ${area.id === selectedAreaId ? 'edit-active' : ''}`;
@@ -331,6 +527,12 @@
                 interactor.style.top = area.y + '%';
                 interactor.style.width = area.w + '%';
                 interactor.style.height = area.h + '%';
+
+                // エリア名を表示するHTML要素
+                const label = document.createElement('div');
+                label.className = 'area-label';
+                label.textContent = area.name;
+                interactor.appendChild(label);
 
                 if (isEditMode) {
                     const handle = document.createElement('div');
@@ -398,9 +600,12 @@
         }
 
         function setupCanvasDrawing() {
-            const canvas = document.getElementById('map-canvas');
+            const canvas = document.getElementById('map-stage');
             canvas.addEventListener('mousedown', (e) => {
-                if (!isEditMode || (e.target !== canvas && e.target.id !== 'map-svg-layer' && !e.target.id.includes('map-bg-image'))) return;
+                if (!isEditMode ||
+                    (e.target !== canvas &&
+                        e.target.id !== 'map-svg-layer' &&
+                        e.target.id !== 'map-bg-image')) return;
                 isDrawing = true;
                 const rect = canvas.getBoundingClientRect();
                 startXPercent = ((e.clientX - rect.left) / rect.width) * 100;
@@ -472,7 +677,7 @@
         }
 
         function initDragMove(e, area) {
-            const canvas = document.getElementById('map-canvas');
+            const canvas = document.getElementById('map-stage');
             const rect = canvas.getBoundingClientRect();
             const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
             const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
@@ -496,7 +701,7 @@
         }
 
         function initResize(e, area) {
-            const canvas = document.getElementById('map-canvas');
+            const canvas = document.getElementById('map-stage');
             const rect = canvas.getBoundingClientRect();
             const startMouseXPercent = ((e.clientX - rect.left) / rect.width) * 100;
             const startMouseYPercent = ((e.clientY - rect.top) / rect.height) * 100;
@@ -654,10 +859,7 @@
             [...(appData.users || [])].sort((a, b) => (b.score || 0) - (a.score || 0)).forEach((u, i) => {
                 const tr = document.createElement('tr'); tr.innerHTML = `<td>${i + 1}</td><td>${u.name || '-'}</td><td>${(Number(u.score) || 0).toLocaleString()} pt</td><td>${u.count || 0}回</td>`; tbody.appendChild(tr);
             });
-            const chatSpace = document.getElementById('pc-chat-space'); chatSpace.innerHTML = '';
-            [...(appData.logs || [])].reverse().forEach(log => {
-                const msg = document.createElement('div'); msg.className = 'chat-msg'; msg.innerHTML = `<strong>[リアルタイム同期]</strong> <span style="color:#5f6368; font-size:11px;">${log.time}</span><br>${log.msg}`; chatSpace.appendChild(msg);
-            });
+
         }
 
         window.onload = init;
@@ -916,6 +1118,7 @@
             background-color: #f0f0f0;
             overflow: hidden;
             user-select: none;
+
             display: flex;
             justify-content: center;
             align-items: center;
@@ -926,15 +1129,28 @@
             background-color: #fafafa;
         }
 
+        /* 背景画像とエリアを重ねる共通ステージ */
+        .map-stage {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        /* 背景画像 */
         .canvas-bg-img {
             position: absolute;
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
             z-index: 0;
             pointer-events: none;
         }
 
+        /* エリア表示用SVG */
         .canvas-svg {
             position: absolute;
             top: 0;
@@ -944,6 +1160,7 @@
             z-index: 1;
         }
 
+        /* エリア操作用コンテナ */
         .editor-area-container {
             position: absolute;
             top: 0;
@@ -953,6 +1170,10 @@
             pointer-events: none;
             z-index: 2;
         }
+
+
+
+
 
         .area-interactor {
             position: absolute;
@@ -1089,12 +1310,71 @@
             font-size: 13px;
         }
 
+        .dashboard-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin-bottom:20px; }
+        .stat-card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:20px; box-shadow:0 2px 6px rgba(0,0,0,.04); }
+        .stat-label { color:#6b7280; font-size:12px; font-weight:600; margin-bottom:10px; }
+        .stat-value { color:var(--dark); font-size:30px; font-weight:700; line-height:1.2; }
+        .stat-card small { color:#6b7280; font-size:11px; }
+        .dashboard-grid { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(280px,1fr); gap:20px; align-items:start; }
+        .dashboard-map { position:relative; height:390px; border:1px solid var(--border); border-radius:8px; background:#f3f4f6; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+        .dashboard-map-stage { position:relative; width:100%; height:100%; overflow:hidden; }
+        .dashboard-map-stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:fill; pointer-events:none; }
+        .dashboard-map-stage svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+        .dashboard-map-labels { position:absolute; inset:0; pointer-events:none; }
+        .dashboard-map-labels .area-label { display:flex; align-items:center; justify-content:center; overflow:hidden; white-space:normal; font-size:11px; transform:none; top:0; left:0; }
+        .duty-list { display:flex; flex-direction:column; gap:8px; }
+        .duty-item { display:flex; justify-content:space-between; gap:12px; padding:10px 12px; background:#f8f9fa; border-radius:6px; font-size:13px; }
+        .duty-item strong { color:var(--primary); }
+        .empty-state { color:#8a8f98; font-size:13px; padding:14px 4px; }
+        .recent-log { padding:12px 0; border-bottom:1px solid #edf0f2; font-size:13px; }
+        .recent-log:last-child { border-bottom:0; }
+        .recent-log-time { color:#7b8490; font-size:11px; display:block; margin-bottom:4px; }
+        .dashboard-section-title { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:14px; }
+        .dashboard-section-title h3 { color:var(--primary); font-size:15px; }
+        @media (max-width: 900px) { .dashboard-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } .dashboard-grid { grid-template-columns:1fr; } }
+        @media (max-width: 560px) { .dashboard-stats { gap:10px; } .stat-card { padding:14px; } .stat-value { font-size:24px; } .dashboard-map { height:280px; } }
+        @media (max-width: 700px) {
+            body { display:block; }
+            aside { position:relative; width:100%; height:auto; min-height:0; bottom:auto; }
+            .sidebar-brand { padding:14px 16px; }
+            .sidebar-menu { display:flex; overflow-x:auto; padding:6px 8px; gap:4px; }
+            .pc-nav-item { flex:0 0 auto; padding:11px 13px; border-left:0; border-bottom:3px solid transparent; font-size:12px; }
+            .pc-nav-item.active { border-left:0; border-bottom:3px solid var(--primary); }
+            .sidebar-footer { padding:9px 14px; }
+            main { margin-left:0; min-height:0; }
+            header { padding:13px 16px; }
+            .pc-content { padding:16px; }
+            .grid-2 { grid-template-columns:1fr; gap:14px; }
+            .canvas-wrapper { height:340px; }
+        }
+        @media (max-width: 420px) {
+            .dashboard-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+            .pc-content { padding:12px; }
+            .canvas-wrapper { height:280px; }
+        }
+
         .app-page {
             display: none;
         }
 
         .app-page.active {
             display: block;
+        }
+
+        /* エリア名の表示 */
+        .area-label {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+
+            font-size: 11px;
+            font-weight: bold;
+            color: #000;
+            white-space: nowrap;
+
+            pointer-events: none;
+            text-align: center;
         }
     </style>
 </head>
@@ -1108,8 +1388,18 @@
             <p>管理者権限のあるGoogleアカウントでログインしてください。</p>
 
             <div style="width:100%; text-align:center; margin-top:20px;">
-                <button class="btn" id="login-google-btn" onclick="handleGoogleLogin()" style="background:#4285F4; display:flex; align-items:center; justify-content:center; gap:8px; width:100%;">
-                    <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#fff" d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.9C6.2 7.1 8.9 5 12 5z"/><path fill="#fff" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"/><path fill="#fff" d="M5.3 14.7c-.2-.7-.4-1.5-.4-2.7s.2-2 .4-2.7L1.6 6.4C.6 8.4 0 10.6 0 13s.6 4.6 1.6 6.6l3.7-2.9z"/><path fill="#fff" d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5.3L1.6 15.6C3.5 19.4 7.4 23 12 23z"/></svg>
+                <button class="btn" id="login-google-btn" onclick="handleGoogleLogin()"
+                    style="background:#4285F4; display:flex; align-items:center; justify-content:center; gap:8px; width:100%;">
+                    <svg width="18" height="18" viewBox="0 0 24 24">
+                        <path fill="#fff"
+                            d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.9C6.2 7.1 8.9 5 12 5z" />
+                        <path fill="#fff"
+                            d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z" />
+                        <path fill="#fff"
+                            d="M5.3 14.7c-.2-.7-.4-1.5-.4-2.7s.2-2 .4-2.7L1.6 6.4C.6 8.4 0 10.6 0 13s.6 4.6 1.6 6.6l3.7-2.9z" />
+                        <path fill="#fff"
+                            d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5.3L1.6 15.6C3.5 19.4 7.4 23 12 23z" />
+                    </svg>
                     Googleアカウントでログイン
                 </button>
                 <div id="login-error-msg" class="login-error" style="margin-top:12px; display:none;"></div>
@@ -1124,10 +1414,12 @@
             <p>5S活動推進事務局ポータル</p>
         </div>
         <ul class="sidebar-menu">
-            <li class="pc-nav-item active" id="t-pc-area" onclick="switchPcPage('area')">📍 リアルタイム状況マップ</li>
-            <li class="pc-nav-item" id="t-pc-rank" onclick="switchPcPage('rank')">🏆 個人スコア・通知ログ</li>
-            <li class="pc-nav-item" id="t-pc-schedule" onclick="switchPcPage('schedule')">📅 当番スケジュール設定</li>
+            <li class="pc-nav-item active" id="t-pc-dashboard" onclick="switchPcPage('dashboard')">▦ ダッシュボード</li>
+            <li class="pc-nav-item" id="t-pc-factory" onclick="switchPcPage('factory')">🏭 工場管理</li>
+            <li class="pc-nav-item" id="t-pc-schedule" onclick="switchPcPage('schedule')">📅 清掃当番管理</li>
             <li class="pc-nav-item" id="t-pc-users" onclick="switchPcPage('users')">👥 ユーザー管理</li>
+            <li class="pc-nav-item" id="t-pc-rank" onclick="switchPcPage('rank')">🏆 ランキング</li>
+            <li class="pc-nav-item" id="t-pc-logs" onclick="switchPcPage('logs')">📋 活動履歴</li>
             <li class="pc-nav-item" id="t-pc-setting" onclick="switchPcPage('setting')">⚙️ Google Chat通知設定</li>
             <li class="pc-nav-item" id="t-pc-account" onclick="switchPcPage('account')">👤 管理アカウント情報</li>
         </ul>
@@ -1139,12 +1431,40 @@
 
     <main>
         <header>
-            <h2 id="page-title">📍 リアルタイム状況マップ</h2>
+            <h2 id="page-title">▦ ダッシュボード</h2>
             <div style="font-size: 13px; color: #5f6368;">Supabase Storage 連携中</div>
         </header>
 
-        <!-- 1. マップ・エリア画面 -->
-        <div id="p-pc-area" class="pc-content app-page active">
+        <!-- ダッシュボード：状況確認専用 -->
+        <div id="p-pc-dashboard" class="pc-content app-page active">
+            <div class="dashboard-stats">
+                <div class="stat-card"><div class="stat-label">登録エリア数</div><div class="stat-value" id="dash-area-count">0</div><small>全工場の合計</small></div>
+                <div class="stat-card"><div class="stat-label">清掃済み</div><div class="stat-value" id="dash-cleaned-count">0</div><small>完了しているエリア</small></div>
+                <div class="stat-card"><div class="stat-label">未清掃</div><div class="stat-value" id="dash-pending-count">0</div><small>これから清掃するエリア</small></div>
+                <div class="stat-card"><div class="stat-label">清掃達成率</div><div class="stat-value" id="dash-clean-rate">0%</div><small>清掃済み ÷ 登録エリア</small></div>
+            </div>
+            <div class="dashboard-grid">
+                <div class="card">
+                    <div class="dashboard-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                        <h3>🏭 工場マップ</h3>
+                        <select id="dash-factory-select" class="form-control" aria-label="表示する工場を選択" onchange="changeDashboardFactory(this.value)" style="width:auto;min-width:160px;max-width:100%;padding:7px 10px;"></select>
+                    </div>
+                    <div class="dashboard-map"><div class="dashboard-map-stage" id="dash-map-stage">
+                        <img id="dash-map-image" alt="工場図面">
+                        <svg id="dash-map-svg" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+                        <div class="dashboard-map-labels" id="dash-map-labels"></div>
+                    </div></div>
+                    <p style="font-size:11px;color:#7b8490;margin-top:10px;">🟢 清掃済み　 🔴 未清掃　※このマップは閲覧専用です。</p>
+                </div>
+                <div>
+                    <div class="card"><div class="dashboard-section-title"><h3>📅 本日の清掃担当者</h3></div><div id="dash-today-duty"><p class="empty-state">読み込み中...</p></div></div>
+                    <div class="card"><div class="dashboard-section-title"><h3>🕒 最近の活動</h3><button class="btn btn-secondary" style="width:auto;padding:6px 10px;font-size:11px;" onclick="switchPcPage('logs')">すべて見る</button></div><div id="dash-recent-activity"></div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 工場管理：既存の編集機能を維持 -->
+        <div id="p-pc-factory" class="pc-content app-page">
             <div
                 style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
                 <div class="factory-tabs" id="factory-tabs-container"></div>
@@ -1177,9 +1497,12 @@
                 <div>
                     <div class="card" style="padding: 12px;">
                         <div class="canvas-wrapper" id="map-canvas">
-                            <img id="map-bg-image" class="canvas-bg-img" alt="マップ背景図面">
-                            <svg class="canvas-svg" id="map-svg-layer"></svg>
-                            <div class="editor-area-container" id="interactor-container"></div>
+                            <div class="map-stage" id="map-stage">
+                                <img id="map-bg-image" class="canvas-bg-img" alt="マップ背景図面">
+                                <svg class="canvas-svg" id="map-svg-layer" viewBox="0 0 100 100"
+                                    preserveAspectRatio="none"></svg>
+                                <div class="editor-area-container" id="interactor-container"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1240,31 +1563,22 @@
             </div>
         </div>
 
-        <!-- 2. スコア・通知ログ画面 -->
+        <!-- ランキング画面 -->
         <div id="p-pc-rank" class="pc-content app-page">
-            <div class="grid-2">
-                <div>
-                    <div class="card">
-                        <h3 style="margin-bottom:15px; color:var(--primary); font-size:15px;">🏆 5S活動 個人スコア自動集計</h3>
-                        <table class="ranking-table" id="rank-table" style="border: 1px solid var(--border);">
-                            <thead>
-                                <tr>
-                                    <th>順位</th>
-                                    <th>氏名</th>
-                                    <th>合計スコア</th>
-                                    <th>当番完了回数</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div>
-                    <div class="card">
-                        <h3 style="color:var(--primary); font-size:14px; margin-bottom:15px;">🔔 リアルタイム同期・通知ストリーム</h3>
-                        <div class="chat-space" id="pc-chat-space"></div>
-                    </div>
-                </div>
+            <div class="card">
+                <h3 style="margin-bottom:15px;color:var(--primary);font-size:15px;">🏆 5S活動 個人ランキング</h3>
+                <table class="ranking-table" id="rank-table" style="border:1px solid var(--border);">
+                    <thead><tr><th>順位</th><th>氏名</th><th>合計スコア</th><th>清掃完了回数</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 活動履歴画面 -->
+        <div id="p-pc-logs" class="pc-content app-page">
+            <div class="card">
+                <h3 style="margin-bottom:15px;color:var(--primary);font-size:15px;">📋 清掃・システム活動履歴</h3>
+                <div id="activity-log-list"></div>
             </div>
         </div>
 
