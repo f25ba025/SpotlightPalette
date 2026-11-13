@@ -400,12 +400,28 @@
 
         window.addEventListener('resize', updateDashboardMapStageSize);
 
+        // ログのtimestampを日本時間の日付・時刻に整形する
+        function formatLogDateTime(log) {
+            const raw = log.timestamp || log.created_at;
+            if (raw) {
+                const date = new Date(raw);
+                if (!Number.isNaN(date.getTime())) {
+                    return date.toLocaleString('ja-JP', {
+                        timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit'
+                    });
+                }
+            }
+            // timestampがない古いログは、既存のtime列を表示する
+            return log.time || '日時不明';
+        }
+
         function renderRecentActivity() {
             const target = document.getElementById('dash-recent-activity');
             if (!target) return;
             const logs = (appData.logs || []).slice(0, 5);
             target.innerHTML = logs.length ? logs.map(log =>
-                `<div class="recent-log"><span class="recent-log-time">${escapeHtml(log.time || '')}</span><p>${escapeHtml(log.msg || '')}</p></div>`
+                `<div class="recent-log"><span class="recent-log-time">${escapeHtml(formatLogDateTime(log))}</span><p>${escapeHtml(log.msg || '')}</p></div>`
             ).join('') : '<p class="empty-state">まだ活動履歴がありません。</p>';
         }
 
@@ -413,7 +429,7 @@
             const target = document.getElementById('activity-log-list');
             if (!target) return;
             target.innerHTML = (appData.logs || []).map(log =>
-                `<div class="recent-log"><span class="recent-log-time">${escapeHtml(log.time || '')}</span><p>${escapeHtml(log.msg || '')}</p></div>`
+                `<div class="recent-log"><span class="recent-log-time">${escapeHtml(formatLogDateTime(log))}</span><p>${escapeHtml(log.msg || '')}</p></div>`
             ).join('') || '<p class="empty-state">まだ活動履歴がありません。</p>';
         }
 
@@ -812,13 +828,30 @@
                         select.appendChild(opt);
                     });
 
+                    select.dataset.previousValue = select.value;
                     select.onchange = async (e) => {
+                        const chosenValue = e.target.value;
+                        const previousValue = e.target.dataset.previousValue || '';
+                        const dbColumn = day.toLowerCase();
+                        e.target.disabled = true;
+
+                        // schedulesにarea_idの行がまだない場合も登録できるようupsertする
+                        const { error } = await supabaseClient
+                            .from('schedules')
+                            .upsert({ area_id: area.id, [dbColumn]: chosenValue || null }, { onConflict: 'area_id' });
+
+                        e.target.disabled = false;
+                        if (error) {
+                            console.error('掃除当番の保存に失敗しました:', error);
+                            e.target.value = previousValue;
+                            alert('掃除当番を保存できませんでした。時間をおいて再度お試しください。');
+                            return;
+                        }
+
                         if (!appData.schedules) appData.schedules = {};
                         if (!appData.schedules[area.id]) appData.schedules[area.id] = {};
-                        appData.schedules[area.id][day] = e.target.value;
-
-                        const dbColumn = day.toLowerCase();
-                        await supabaseClient.from('schedules').update({ [dbColumn]: e.target.value }).eq('area_id', area.id);
+                        appData.schedules[area.id][day] = chosenValue;
+                        e.target.dataset.previousValue = chosenValue;
                     };
                     td.appendChild(select); tr.appendChild(td);
                 });
