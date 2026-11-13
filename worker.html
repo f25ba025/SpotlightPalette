@@ -133,7 +133,7 @@
                 .subscribe();
         }
 
-        // 🔑 Googleログインの実行
+        // Googleログインの実行
         async function handleGoogleLogin() {
             if (!supabaseClient) {
                 alert("データベースに接続されていません。");
@@ -141,12 +141,10 @@
             }
 
             try {
-                // Supabase AuthのGoogleログインを呼び出す
-                // ログイン成功後、元のページ（または指定のURL）にリダイレクトされる
                 const { data, error } = await supabaseClient.auth.signInWithOAuth({
                     provider: 'google',
                     options: {
-                        redirectTo: window.location.origin + window.location.pathname, // 現在のページに戻る
+                        redirectTo: window.location.origin + window.location.pathname,
                         queryParams: {
                             prompt: 'select_account'
                         }
@@ -161,12 +159,11 @@
             }
         }
 
-        // 📌 保留されているエリアIDがあれば開いてクリアする関数
+        // 保留されているエリアIDがあれば開いてクリアする関数
         function checkAndOpenPendingArea() {
             const pendingAreaId = localStorage.getItem('spotlight_pending_area');
             if (!pendingAreaId) return;
 
-            // 使い終わったらすぐに削除しておく（何度も勝手に開かないようにするため）
             localStorage.removeItem('spotlight_pending_area');
 
             const targetArea = (appData.areas || []).find(a => a.id === pendingAreaId);
@@ -180,25 +177,24 @@
 
         function handleLogout() {
             if (!confirm("ログアウトしますか？")) return;
-            localStorage.removeItem('spotlight_user');
+            if (supabaseClient) {
+                supabaseClient.auth.signOut();
+            }
             currentUser = null;
             document.getElementById('login-overlay').style.display = 'flex';
-            document.getElementById('login-email-input').value = '';
         }
 
         function setupUserSession() {
-            renderUserSelect();
             renderFactorySelect();
             renderCanvas();
             renderMyTasks();
             renderRankings();
             renderLogs();
+            updateDashboard();
 
             if (currentUser) {
                 document.getElementById('account-user-name').innerText = currentUser.name;
                 document.getElementById('account-user-email').innerText = currentUser.email || "";
-                const select = document.getElementById('emp-user-select');
-                if (select) select.value = currentUser.id;
             }
         }
 
@@ -218,18 +214,6 @@
             }
         }
 
-        function renderUserSelect() {
-            const select = document.getElementById('emp-user-select');
-            select.innerHTML = '';
-            (appData.users || []).forEach(u => {
-                const opt = document.createElement('option');
-                opt.value = u.id;
-                opt.innerText = u.name;
-                select.appendChild(opt);
-            });
-            select.onchange = () => { renderMyTasks(); };
-        }
-
         function renderFactorySelect() {
             const select = document.getElementById('emp-factory-select');
             select.innerHTML = '';
@@ -245,22 +229,104 @@
         function onFactorySelectChange(val) {
             currentFactoryId = val;
             renderCanvas();
+            updateDashboard();
+        }
+
+        function getTodayKey() {
+            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const today = days[new Date().getDay()];
+            return (today === 'Sun' || today === 'Sat') ? 'Mon' : today;
+        }
+
+        function getMyAreas() {
+            if (!currentUser) return [];
+            const todayKey = getTodayKey();
+            return (appData.areas || []).filter(a =>
+                appData.schedules && appData.schedules[a.id] &&
+                appData.schedules[a.id][todayKey] === currentUser.id
+            );
+        }
+
+        function updateDashboard() {
+            const areas = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
+            const cleaned = areas.filter(a => a.status === 'cleaned').length;
+            const remaining = Math.max(areas.length - cleaned, 0);
+            const rate = areas.length ? Math.round(cleaned / areas.length * 100) : 0;
+            const mine = getMyAreas();
+            const mineDone = mine.filter(a => a.status === 'cleaned').length;
+
+            document.getElementById('stat-total').textContent = areas.length;
+            document.getElementById('stat-done').textContent = cleaned;
+            document.getElementById('stat-remaining').textContent = remaining;
+            document.getElementById('progress-rate').textContent = rate + '%';
+            document.getElementById('progress-fill').style.width = rate + '%';
+            document.getElementById('my-progress').textContent = `${mineDone} / ${mine.length} エリア完了`;
+        }
+
+        // 背景画像と同じ縦横比でステージのサイズを調整する
+        function updateMapStageSize() {
+            const wrapper = document.getElementById('emp-canvas-parent');
+            const stage = document.getElementById('emp-map-stage');
+            const img = document.getElementById('emp-bg-image');
+
+            if (!wrapper || !stage) return;
+
+            const wrapperWidth = wrapper.clientWidth;
+            const wrapperHeight = wrapper.clientHeight;
+
+            // 背景画像がない場合は画面全体を使用
+            if (!img.naturalWidth || !img.naturalHeight) {
+                stage.style.width = wrapperWidth + 'px';
+                stage.style.height = wrapperHeight + 'px';
+                return;
+            }
+
+            // 背景画像の縦横比
+            const imageRatio = img.naturalWidth / img.naturalHeight;
+
+            // マップ画面に収まる最大サイズを計算
+            let stageWidth = wrapperWidth;
+            let stageHeight = wrapperWidth / imageRatio;
+
+            if (stageHeight > wrapperHeight) {
+                stageHeight = wrapperHeight;
+                stageWidth = wrapperHeight * imageRatio;
+            }
+
+            stage.style.width = stageWidth + 'px';
+            stage.style.height = stageHeight + 'px';
         }
 
         function renderCanvas() {
             const svg = document.getElementById('emp-svg');
             const imgEl = document.getElementById('emp-bg-image');
+
             svg.innerHTML = '';
 
             const currentFac = (appData.factories || []).find(f => f.id === currentFactoryId);
+
             if (currentFac && currentFac.image) {
-                imgEl.src = currentFac.image;
+
+                // 画像が切り替わったときにサイズを再計算
+                if (imgEl.src !== currentFac.image) {
+                    imgEl.onload = () => {
+                        updateMapStageSize();
+                    };
+
+                    imgEl.src = currentFac.image;
+                } else {
+                    updateMapStageSize();
+                }
+
                 imgEl.style.display = "block";
+
             } else {
                 imgEl.src = "";
                 imgEl.style.display = "none";
+                updateMapStageSize();
             }
 
+            const myAreaIds = new Set(getMyAreas().map(a => a.id));
             const filtered = (appData.areas || []).filter(a => a.factoryId === currentFactoryId);
             filtered.forEach(area => {
                 let shape = document.createElementNS("http://www.w3.org/2000/svg", "rect");
@@ -271,8 +337,10 @@
 
                 const isCleaned = area.status === 'cleaned';
                 shape.setAttribute("fill", isCleaned ? "rgba(16, 124, 65, 0.4)" : "rgba(216, 59, 1, 0.4)");
-                shape.setAttribute("stroke", isCleaned ? "#107c41" : "#d83b01");
-                shape.setAttribute("stroke-width", "2");
+                const isMine = myAreaIds.has(area.id);
+                shape.setAttribute("stroke", isMine ? "#356FE5" : (isCleaned ? "#16845B" : "#D98A2B"));
+                shape.setAttribute("stroke-width", isMine ? "4" : "2");
+                if (isMine) shape.setAttribute("stroke-dasharray", "6 3");
                 shape.style.cursor = "pointer";
                 shape.onclick = () => openModal(area);
                 svg.appendChild(shape);
@@ -312,10 +380,8 @@
         }
 
         async function completeCleaning() {
-            if (!selectedAreaId || !supabaseClient) return;
+            if (!selectedAreaId || !supabaseClient || !currentUser) return;
             const area = (appData.areas || []).find(a => a.id === selectedAreaId);
-            const userId = document.getElementById('emp-user-select').value;
-            const user = (appData.users || []).find(u => u.id === userId);
             const earnedScore = area && area.score ? area.score : 100;
 
             const btn = document.getElementById('btn-complete');
@@ -324,15 +390,17 @@
             try {
                 await supabaseClient.from('areas').update({ status: 'cleaned' }).eq('id', selectedAreaId);
 
-                if (user) {
-                    const newScore = (Number(user.score) || 0) + earnedScore;
-                    const newCount = (Number(user.count) || 0) + 1;
-                    await supabaseClient.from('users').update({ score: newScore, count: newCount }).eq('id', userId);
-                }
+                const newScore = (Number(currentUser.score) || 0) + earnedScore;
+                const newCount = (Number(currentUser.count) || 0) + 1;
+
+                await supabaseClient.from('users').update({ score: newScore, count: newCount }).eq('id', currentUser.id);
+
+                currentUser.score = newScore;
+                currentUser.count = newCount;
 
                 const now = new Date();
                 const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
-                const logMsg = `${user ? user.name : '作業者'} が 「${area ? area.name : ''}」 の清掃を完了しました！ (+${earnedScore}pt)`;
+                const logMsg = `${currentUser.name} が 「${area ? area.name : ''}」 の清掃を完了しました！ (+${earnedScore}pt)`;
 
                 await supabaseClient.from('logs').insert([{
                     time: timeStr,
@@ -343,6 +411,7 @@
                 await loadFromSupabase();
                 renderCanvas();
                 renderMyTasks();
+                updateDashboard();
                 alert("清掃完了を記録しました！");
             } catch (err) {
                 console.error("保存エラー:", err);
@@ -354,18 +423,19 @@
 
         function renderMyTasks() {
             const container = document.getElementById('my-duty-list');
-            const userId = document.getElementById('emp-user-select').value;
-            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-            const todayKey = days[new Date().getDay()] === 'Sun' || days[new Date().getDay()] === 'Sat' ? 'Mon' : days[new Date().getDay()];
-
-            const myAreas = (appData.areas || []).filter(a => appData.schedules && appData.schedules[a.id] && appData.schedules[a.id][todayKey] === userId);
-
+            if (!currentUser) return;
+            const myAreas = getMyAreas();
             if (myAreas.length === 0) {
-                container.innerHTML = "<span style='color:#777; font-weight:normal;'>本日の担当エリアはありません。</span>";
-                return;
+                container.innerHTML = "<p class='empty-state'>本日の担当エリアはありません。</p>";
+            } else {
+                container.innerHTML = myAreas.map(a => `
+                    <div class="duty-item">
+                        <span class="duty-dot ${a.status === 'cleaned' ? 'is-done' : 'is-pending'}"></span>
+                        <span class="duty-name">${a.name}</span>
+                        <span class="duty-status ${a.status === 'cleaned' ? 'is-done' : 'is-pending'}">${a.status === 'cleaned' ? '完了' : '未清掃'}</span>
+                    </div>`).join('');
             }
-
-            container.innerHTML = myAreas.map(a => `・${a.name} (${a.status === 'cleaned' ? '🟢完了' : '🔴未清掃'})`).join('<br>');
+            updateDashboard();
         }
 
         function renderRankings() {
@@ -388,97 +458,94 @@
                 container.appendChild(div);
             });
         }
+        // ウィンドウサイズが変更されたときにマップのサイズを再計算
+        window.addEventListener('resize', updateMapStageSize);
 
         window.onload = init;
     </script>
-
     <style>
         :root {
-            --primary: #2b579a;
-            --primary-light: #eff4fc;
-            --success: #107c41;
-            --warning: #b75c00;
-            --gray-bg: #f5f7fa;
-            --border: #dddddd;
-            --accent: #d83b01;
+            --primary: #294875;
+            --primary-light: #edf3fc;
+            --blue: #4f80d9;
+            --success: #21865d;
+            --warning: #d98a2b;
+            --gray-bg: #f4f6fa;
+            --border: #e5e9f0;
+            --text: #253247;
+            --muted: #778397;
+            --accent: #c94d42;
         }
 
         * {
             box-sizing: border-box;
             font-family: 'Segoe UI', Meiryo, sans-serif;
-            margin: 0;
-            padding: 0;
         }
 
         body {
-            background-color: #e0e4ec;
-            padding: 10px;
+            margin: 0;
+            padding: 28px;
+            color: var(--text);
+            background: #eef1f6;
         }
 
-        .phone-container {
-            max-width: 380px;
+        .app-container {
+            width: 100%;
+            max-width: 1500px;
             margin: 0 auto;
         }
 
-        .phone-mock {
-            background: white;
-            border: 12px solid #222;
-            border-radius: 35px;
-            height: 690px;
-            overflow: hidden;
-            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
-            position: relative;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .phone-header {
-            background: #222;
-            color: white;
-            font-size: 11px;
-            padding: 6px 20px;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .phone-app-bar {
-            background: var(--primary);
-            color: white;
-            padding: 14px;
-            font-size: 16px;
-            font-weight: bold;
-            text-align: center;
-        }
-
-        .phone-content {
-            padding: 15px;
-            flex: 1;
-            overflow-y: auto;
-            font-size: 13px;
+        .app-shell {
+            min-height: calc(100vh - 56px);
             background: var(--gray-bg);
-            display: none;
-        }
-
-        .phone-content.active {
-            display: block;
+            border-radius: 18px;
+            box-shadow: 0 12px 40px rgba(35, 52, 78, .10);
+            overflow: hidden;
+            display: grid;
+            grid-template-columns: 238px minmax(0, 1fr);
+            grid-template-rows: 1fr;
+            position: relative;
         }
 
         .phone-nav-bar {
-            background: white;
-            border-top: 1px solid var(--border);
-            display: table;
-            width: 100%;
-            table-layout: fixed;
+            grid-column: 1;
+            grid-row: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            padding: 26px 16px;
+            background: #fff;
+            border-right: 1px solid var(--border);
+        }
+
+        .phone-nav-bar::before {
+            content: 'SPOTLIGHT PALETTE';
+            display: block;
+            padding: 5px 12px 30px;
+            color: var(--primary);
+            font-size: 14px;
+            letter-spacing: .09em;
+            font-weight: 800;
         }
 
         .phone-nav-item {
-            display: table-cell;
-            text-align: center;
-            padding: 12px 2px;
-            font-size: 10px;
-            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            padding: 13px 14px;
+            border-radius: 10px;
+            color: #68758a;
+            font-size: 14px;
+            font-weight: 650;
             cursor: pointer;
-            font-weight: bold;
+            transition: .2s ease;
+            text-align: left;
+        }
+
+        .phone-nav-item:hover {
+            background: #f5f7fb;
+            color: var(--primary);
         }
 
         .phone-nav-item.active {
@@ -486,203 +553,682 @@
             background: var(--primary-light);
         }
 
-        .card {
-            background: white;
-            border-radius: 6px;
-            padding: 15px;
-            margin-bottom: 15px;
-            border: 1px solid #e0e0e0;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        .phone-content {
+            display: none;
+            grid-column: 2;
+            grid-row: 1;
+            min-width: 0;
+            width: 100%;
+            padding: 34px clamp(22px, 3vw, 48px);
+            overflow-y: auto;
+            background: var(--gray-bg);
+            font-size: 15px;
         }
 
-        .badge {
-            display: inline-block;
-            padding: 3px 7px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: bold;
-            color: white;
+        .phone-content.active {
+            display: block;
         }
 
-        .badge-warning {
-            background-color: var(--warning);
+        .phone-app-bar {
+            color: var(--text);
+            padding: 0 0 22px;
+            font-size: 26px;
+            font-weight: 750;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            margin: 0 0 24px !important;
         }
 
-        .badge-primary {
-            background-color: var(--primary);
+        .page-subtitle {
+            margin: -12px 0 22px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .stat-card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 13px;
+            padding: 18px 20px;
+            box-shadow: 0 2px 8px rgba(34, 52, 78, .025);
+        }
+
+        .stat-label {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 650;
+        }
+
+        .stat-value {
+            display: block;
+            margin-top: 7px;
+            color: var(--text);
+            font-size: 28px;
+            line-height: 1.2;
+            font-weight: 750;
+        }
+
+        .stat-card.done .stat-value {
+            color: var(--success);
+        }
+
+        .stat-card.remaining .stat-value {
+            color: var(--warning);
+        }
+
+        .progress-card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 13px;
+            padding: 17px 20px;
+            margin-bottom: 22px;
+        }
+
+        .progress-heading {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .progress-heading strong {
+            color: var(--blue);
+            font-size: 15px;
+        }
+
+        .progress-track {
+            height: 9px;
+            background: #edf0f5;
+            border-radius: 99px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0;
+            background: linear-gradient(90deg, #4f80d9, #72a2ed);
+            border-radius: inherit;
+            transition: width .35s ease;
+        }
+
+        .area-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1.7fr) minmax(280px, .8fr);
+            gap: 20px;
+            align-items: start;
+        }
+
+        .map-panel,
+        .duty-panel {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 20px;
+            min-width: 0;
+        }
+
+        .panel-heading {
+            margin: 0 0 14px;
+            font-size: 15px;
+            font-weight: 750;
+        }
+
+        .factory-label {
+            display: block;
+            margin: 0 0 7px;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .form-control {
+            width: 100%;
+            min-height: 44px;
+            padding: 10px 12px;
+            border: 1px solid #d9e0ea;
+            border-radius: 8px;
+            background: #fff;
+            color: var(--text);
+            font-size: 14px;
+            outline: none;
+        }
+
+        .form-control:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 3px rgba(79, 128, 217, .12);
+        }
+
+        .map-hint {
+            margin: 16px 0 10px;
+            color: var(--muted);
+            font-size: 12px;
         }
 
         .phone-canvas-wrapper {
             position: relative;
             width: 100%;
-            height: 240px;
-            border: 1px solid #bbb;
-            background-color: #eee;
+            height: clamp(360px, 42vw, 560px);
+            border: 1px solid #e1e6ee;
+            background: #f0f2f6;
             overflow: hidden;
-            margin-bottom: 15px;
-            border-radius: 6px;
+            border-radius: 10px;
             user-select: none;
+
+            /* 内側のステージを中央に配置 */
             display: flex;
             justify-content: center;
             align-items: center;
         }
 
+        /* 背景画像とエリア描画を重ねる共通領域 */
+        .phone-map-stage {
+            position: relative;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        /* 背景画像 */
         .phone-bg-img {
             position: absolute;
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
             z-index: 0;
             pointer-events: none;
         }
 
+        /* エリア描画 */
         .phone-canvas-svg {
             position: absolute;
-            top: 0;
-            left: 0;
+            inset: 0;
             width: 100%;
             height: 100%;
             z-index: 1;
         }
 
+        .map-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-top: 13px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 3px;
+            display: inline-block;
+        }
+
+        .legend-dot.done {
+            background: #21865d;
+        }
+
+        .legend-dot.pending {
+            background: #d98a2b;
+        }
+
+        .legend-dot.mine {
+            background: #4f80d9;
+        }
+
+        .duty-panel {
+            background: #fff;
+        }
+
+        .duty-summary {
+            margin: -4px 0 14px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .duty-item {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 12px 0;
+            border-top: 1px solid #edf0f4;
+        }
+
+        .duty-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex: 0 0 auto;
+        }
+
+        .duty-dot.is-done {
+            background: var(--success);
+        }
+
+        .duty-dot.is-pending {
+            background: var(--warning);
+        }
+
+        .duty-name {
+            flex: 1;
+            min-width: 0;
+            font-size: 13px;
+            font-weight: 650;
+            overflow-wrap: anywhere;
+        }
+
+        .duty-status {
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .duty-status.is-done {
+            color: var(--success);
+        }
+
+        .duty-status.is-pending {
+            color: var(--warning);
+        }
+
+        .empty-state {
+            color: var(--muted);
+            font-size: 13px;
+            padding: 12px 0;
+        }
+
+        .card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 13px;
+            padding: 22px;
+            margin-bottom: 18px;
+            box-shadow: 0 2px 8px rgba(34, 52, 78, .025);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 5px 9px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 750;
+            color: white;
+        }
+
+        .badge-warning {
+            background: var(--warning);
+        }
+
+        .badge-primary {
+            background: var(--primary);
+        }
+
         .ranking-table {
             width: 100%;
             border-collapse: collapse;
+            background: #fff;
+            border-radius: 12px;
+            overflow: hidden;
         }
 
         .ranking-table td {
-            padding: 10px;
+            padding: 16px;
             text-align: left;
             border-bottom: 1px solid var(--border);
-            font-size: 13px;
+            font-size: 14px;
+        }
+
+        .ranking-table tr:first-child td {
+            background: #f5f8ff;
+        }
+
+        #history-list-container>div {
+            padding: 14px 16px !important;
+            margin-bottom: 10px !important;
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--blue) !important;
+            border-radius: 10px !important;
+            font-size: 13px !important;
         }
 
         .form-group {
-            margin-bottom: 15px;
+            margin-bottom: 18px;
         }
 
         .form-group label {
             display: block;
-            font-weight: bold;
-            margin-bottom: 5px;
-            font-size: 12px;
-        }
-
-        .form-control {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+            font-weight: 700;
+            margin-bottom: 7px;
             font-size: 13px;
-        }
-
-        /* モーダル */
-        .modal-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 100;
-        }
-
-        .modal-body {
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            width: 85%;
         }
 
         .btn {
             display: block;
             width: 100%;
-            padding: 10px;
+            min-height: 46px;
+            padding: 12px;
             border: none;
-            border-radius: 4px;
+            border-radius: 8px;
             background: var(--primary);
             color: white;
-            font-weight: bold;
+            font-weight: 700;
             cursor: pointer;
             text-align: center;
-            margin-top: 10px;
+            margin-top: 12px;
+            transition: filter .2s;
+        }
+
+        .btn:hover {
+            filter: brightness(1.08);
         }
 
         .btn-secondary {
-            background: #6c757d;
+            background: #738096;
         }
 
         .btn-danger {
             background: var(--accent);
         }
 
-        /* ログイン画面用オーバーレイ */
-        .login-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
             width: 100%;
             height: 100%;
-            background: #ffffff;
-            z-index: 200;
+            background: rgba(21, 32, 49, .48);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 20px;
+            backdrop-filter: blur(3px);
+        }
+
+        .modal-body {
+            background: white;
+            border-radius: 16px;
+            padding: 26px;
+            width: min(480px, 100%);
+            box-shadow: 0 18px 50px rgba(0, 0, 0, .2);
+        }
+
+        .login-overlay {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(244, 246, 250, .98);
+            z-index: 2000;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            padding: 20px;
-            box-sizing: border-box;
+            padding: 24px;
+        }
+
+        #login-overlay>div {
+            width: min(420px, 100%) !important;
+        }
+
+        #login-overlay h3 {
+            font-size: 26px;
+        }
+
+        #login-overlay p {
+            font-size: 15px !important;
+        }
+
+        @media (max-width: 1050px) and (min-width: 768px) {
+            .app-shell {
+                grid-template-columns: 190px minmax(0, 1fr);
+            }
+
+            .phone-nav-bar {
+                padding: 22px 12px;
+            }
+
+            .phone-content {
+                padding: 28px 24px;
+            }
+
+            .area-layout {
+                grid-template-columns: minmax(0, 1.4fr) minmax(230px, .8fr);
+            }
+        }
+
+        @media (max-width: 767px) {
+            body {
+                padding: 0;
+                background: #fff;
+            }
+
+            .app-container {
+                max-width: none;
+            }
+
+            .app-shell {
+                display: flex;
+                flex-direction: column;
+                min-height: 100vh;
+                border-radius: 0;
+                box-shadow: none;
+                padding-bottom: 70px;
+            }
+
+            .phone-content {
+                order: 0;
+                padding: 22px 16px;
+                font-size: 14px;
+            }
+
+            .phone-app-bar {
+                font-size: 21px;
+                padding-bottom: 17px;
+                margin-bottom: 19px !important;
+            }
+
+            .phone-nav-bar {
+                order: 1;
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: 500;
+                display: flex;
+                flex-direction: row;
+                gap: 0;
+                padding: 5px 4px calc(5px + env(safe-area-inset-bottom));
+                border-top: 1px solid var(--border);
+                border-right: 0;
+                box-shadow: 0 -4px 18px rgba(30, 45, 68, .07);
+            }
+
+            .phone-nav-bar::before {
+                display: none;
+            }
+
+            .phone-nav-item {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                gap: 3px;
+                padding: 8px 1px;
+                border-radius: 8px;
+                font-size: 10px;
+                text-align: center;
+                white-space: nowrap;
+            }
+
+            .phone-nav-item.active {
+                background: var(--primary-light);
+            }
+
+            .stats-grid {
+                gap: 8px;
+                margin-bottom: 12px;
+            }
+
+            .stat-card {
+                padding: 13px 10px;
+                border-radius: 10px;
+            }
+
+            .stat-label {
+                font-size: 10px;
+            }
+
+            .stat-value {
+                font-size: 23px;
+            }
+
+            .progress-card {
+                padding: 14px;
+                margin-bottom: 15px;
+            }
+
+            .area-layout {
+                grid-template-columns: 1fr;
+                gap: 13px;
+            }
+
+            .map-panel,
+            .duty-panel {
+                padding: 15px;
+                border-radius: 12px;
+            }
+
+            .phone-canvas-wrapper {
+                height: 290px;
+            }
+
+            .ranking-table td {
+                padding: 12px 9px;
+                font-size: 13px;
+            }
+
+            .card {
+                padding: 16px;
+            }
+
+            .modal-body {
+                padding: 20px;
+            }
+        }
+
+        @media (max-width: 360px) {
+            .phone-content {
+                padding-left: 12px;
+                padding-right: 12px;
+            }
+
+            .phone-nav-item {
+                font-size: 9px;
+            }
+
+            .stat-value {
+                font-size: 20px;
+            }
         }
     </style>
 </head>
 
 <body>
 
-    <div class="phone-container">
-        <div class="phone-mock">
-            <div class="phone-header"><span>Spotlight Palette Mobile</span><span>🔋 100%</span></div>
+    <div class="app-container">
+        <div class="app-shell">
 
             <!-- ログイン画面モーダル -->
-<div id="login-overlay" class="login-overlay">
-    <h3 style="color:var(--primary); margin-bottom:10px;">従業員ログイン</h3>
-    <p style="font-size:12px; color:#666; margin-bottom:20px; text-align:center;">
-        お使いのGoogleアカウントでログインしてください。</p>
-    <div style="width:100%; text-align:center;">
-        <button class="btn" id="login-google-btn" onclick="handleGoogleLogin()" style="background:#4285F4; display:flex; align-items:center; justify-content:center; gap:8px;">
-            <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#fff" d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.9C6.2 7.1 8.9 5 12 5z"/><path fill="#fff" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"/><path fill="#fff" d="M5.3 14.7c-.2-.7-.4-1.5-.4-2.7s.2-2 .4-2.7L1.6 6.4C.6 8.4 0 10.6 0 13s.6 4.6 1.6 6.6l3.7-2.9z"/><path fill="#fff" d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5.3L1.6 15.6C3.5 19.4 7.4 23 12 23z"/></svg>
-            Googleアカウントでログイン
-        </button>
-        <p id="login-error-msg" style="color:red; font-size:11px; margin-top:10px; text-align:center; display:none;"></p>
-    </div>
-</div>
+            <div id="login-overlay" class="login-overlay">
+                <h3 style="color:var(--primary); margin-bottom:10px;">従業員ログイン</h3>
+                <p style="font-size:12px; color:#666; margin-bottom:20px; text-align:center;">
+                    お使いのGoogleアカウントでログインしてください。</p>
+                <div style="width:100%; text-align:center;">
+                    <button class="btn" id="login-google-btn" onclick="handleGoogleLogin()"
+                        style="background:#4285F4; display:flex; align-items:center; justify-content:center; gap:8px;">
+                        <svg width="18" height="18" viewBox="0 0 24 24">
+                            <path fill="#fff"
+                                d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.8 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.9C6.2 7.1 8.9 5 12 5z" />
+                            <path fill="#fff"
+                                d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z" />
+                            <path fill="#fff"
+                                d="M5.3 14.7c-.2-.7-.4-1.5-.4-2.7s.2-2 .4-2.7L1.6 6.4C.6 8.4 0 10.6 0 13s.6 4.6 1.6 6.6l3.7-2.9z" />
+                            <path fill="#fff"
+                                d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5.3L1.6 15.6C3.5 19.4 7.4 23 12 23z" />
+                        </svg>
+                        Googleアカウントでログイン
+                    </button>
+                    <p id="login-error-msg"
+                        style="color:red; font-size:11px; margin-top:10px; text-align:center; display:none;"></p>
+                </div>
+            </div>
 
             <!-- エリアマップ画面 -->
             <div id="p-emp-area" class="phone-content active">
-                <div class="phone-app-bar" style="margin: -15px -15px 15px -15px;">掃除エリアマップ</div>
+                <div class="phone-app-bar">清掃エリアマップ</div>
+                <p class="page-subtitle">担当エリアと工場全体の清掃状況を確認できます。</p>
 
-                <label style="font-size:11px; font-weight:bold; color:#666;">ログインユーザー</label>
-                <select class="form-control" id="emp-user-select"
-                    style="margin-bottom:12px; font-weight:bold;"></select>
-
-                <label style="font-size:11px; font-weight:bold; color:#666;">大枠エリア（工場）の選択切り替え</label>
-                <select class="form-control" id="emp-factory-select" onchange="onFactorySelectChange(this.value)"
-                    style="margin-bottom:12px; font-weight:bold;"></select>
-
-                <div style="margin-bottom: 8px;">
-                    <p style="font-weight:bold; color:#444;">📍 該当エリアのタップで清掃報告</p>
+                <div class="stats-grid">
+                    <div class="stat-card"><span class="stat-label">総エリア数</span><strong class="stat-value"
+                            id="stat-total">0</strong></div>
+                    <div class="stat-card done"><span class="stat-label">清掃完了</span><strong class="stat-value"
+                            id="stat-done">0</strong></div>
+                    <div class="stat-card remaining"><span class="stat-label">未清掃</span><strong class="stat-value"
+                            id="stat-remaining">0</strong></div>
                 </div>
 
-                <div class="phone-canvas-wrapper" id="emp-canvas-parent">
-                    <img id="emp-bg-image" class="phone-bg-img" alt="背景図面">
-                    <svg class="phone-canvas-svg" id="emp-svg"></svg>
-                </div>
-
-                <div class="card" style="background:#fffde6; border:1px solid #ffe57f; padding: 10px;">
-                    <span class="badge badge-warning">本日のあなたの担当エリア</span>
-                    <div id="my-duty-list" style="font-weight:bold; margin-top:5px; font-size:12px; line-height:1.5;">
+                <div class="progress-card">
+                    <div class="progress-heading">
+                        <span>工場全体の清掃進捗</span>
+                        <strong id="progress-rate">0%</strong>
                     </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+
+                <div class="area-layout">
+                    <section class="map-panel">
+                        <h3 class="panel-heading">📍 エリアマップ</h3>
+                        <label class="factory-label" for="emp-factory-select">工場・大枠エリア</label>
+                        <select class="form-control" id="emp-factory-select"
+                            onchange="onFactorySelectChange(this.value)"></select>
+                        <p class="map-hint">マップ上のエリアを選択すると、清掃状況や報告画面を確認できます。</p>
+
+                        <div class="phone-canvas-wrapper" id="emp-canvas-parent">
+                            <div class="phone-map-stage" id="emp-map-stage">
+                                <img id="emp-bg-image" class="phone-bg-img" alt="背景図面">
+                                <svg class="phone-canvas-svg" id="emp-svg"></svg>
+                            </div>
+                        </div>
+
+                        <div class="map-legend">
+                            <span class="legend-item"><i class="legend-dot done"></i>清掃完了</span>
+                            <span class="legend-item"><i class="legend-dot pending"></i>未清掃</span>
+                            <span class="legend-item"><i class="legend-dot mine"></i>あなたの担当</span>
+                        </div>
+                    </section>
+
+                    <aside class="duty-panel">
+                        <h3 class="panel-heading">本日の担当エリア</h3>
+                        <p class="duty-summary" id="my-progress">0 / 0 エリア完了</p>
+                        <div id="my-duty-list"></div>
+                    </aside>
                 </div>
             </div>
 
@@ -705,8 +1251,10 @@
             <div id="p-emp-setting" class="phone-content">
                 <div class="phone-app-bar" style="margin: -15px -15px 15px -15px;">個人マスター設定</div>
                 <div class="card">
-                    <div class="form-group"><label>同期状態</label><input type="text" class="form-control" value="リアルタイム接続中"
-                            readonly></div>
+                    <div class="form-group">
+                        <label>同期状態</label>
+                        <input type="text" class="form-control" value="リアルタイム接続中" readonly>
+                    </div>
                 </div>
             </div>
 
@@ -723,11 +1271,16 @@
 
             <!-- 下部ナビゲーション -->
             <div class="phone-nav-bar">
-                <div class="phone-nav-item active" id="t-emp-area" onclick="switchEmpPage('area')">📍<br>エリア</div>
-                <div class="phone-nav-item" id="t-emp-rank" onclick="switchEmpPage('rank')">🏆<br>スコア</div>
-                <div class="phone-nav-item" id="t-emp-history" onclick="switchEmpPage('history')">📜<br>履歴</div>
-                <div class="phone-nav-item" id="t-emp-setting" onclick="switchEmpPage('setting')">⚙️<br>設定</div>
-                <div class="phone-nav-item" id="t-emp-account" onclick="switchEmpPage('account')">👤<br>会員</div>
+                <div class="phone-nav-item active" id="t-emp-area" onclick="switchEmpPage('area')">
+                    <span>📍</span><span>エリア</span></div>
+                <div class="phone-nav-item" id="t-emp-rank" onclick="switchEmpPage('rank')">
+                    <span>🏆</span><span>スコア</span></div>
+                <div class="phone-nav-item" id="t-emp-history" onclick="switchEmpPage('history')">
+                    <span>📜</span><span>履歴</span></div>
+                <div class="phone-nav-item" id="t-emp-setting" onclick="switchEmpPage('setting')">
+                    <span>⚙️</span><span>設定</span></div>
+                <div class="phone-nav-item" id="t-emp-account" onclick="switchEmpPage('account')">
+                    <span>👤</span><span>会員</span></div>
             </div>
         </div>
     </div>
@@ -736,12 +1289,15 @@
     <div class="modal-overlay" id="emp-modal">
         <div class="modal-body">
             <h3 id="modal-area-name" style="margin-bottom:10px;">エリア名</h3>
-            <p style="font-size:12px; margin-bottom:5px;">ステータス: <span id="modal-area-status"
-                    style="font-weight:bold;">-</span></p>
-            <p style="font-size:12px; margin-bottom:5px;">獲得ポイント: <span id="modal-area-points"
-                    style="font-weight:bold; color:var(--primary);">-</span></p>
-            <p style="font-size:12px; margin-bottom:15px;">本日の担当: <span id="modal-area-assignee"
-                    style="font-weight:bold;">-</span></p>
+            <p style="font-size:12px; margin-bottom:5px;">
+                ステータス: <span id="modal-area-status" style="font-weight:bold;">-</span>
+            </p>
+            <p style="font-size:12px; margin-bottom:5px;">
+                獲得ポイント: <span id="modal-area-points" style="font-weight:bold; color:var(--primary);">-</span>
+            </p>
+            <p style="font-size:12px; margin-bottom:15px;">
+                本日の担当: <span id="modal-area-assignee" style="font-weight:bold;">-</span>
+            </p>
             <button class="btn" id="btn-complete" onclick="completeCleaning()">清掃完了を報告</button>
             <button class="btn btn-secondary" onclick="closeModal()">閉じる</button>
         </div>
