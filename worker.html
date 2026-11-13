@@ -448,13 +448,36 @@
             });
         }
 
+        // 履歴の日時を日本時間で表示する
+        function formatLogDateTime(log) {
+            const dateValue = log.timestamp || log.created_at;
+
+            if (dateValue) {
+                const date = new Date(dateValue);
+                if (!Number.isNaN(date.getTime())) {
+                    return date.toLocaleString('ja-JP', {
+                        timeZone: 'Asia/Tokyo',
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                }
+            }
+
+            // 日時情報がない古いデータは、従来の時刻表示にする
+            return log.time || '日時不明';
+        }
+
         function renderLogs() {
             const container = document.getElementById('history-list-container');
             container.innerHTML = '';
             [...(appData.logs || [])].reverse().forEach(log => {
                 const div = document.createElement('div');
                 div.style.cssText = "background:white; padding:8px 10px; margin-bottom:8px; border-left:4px solid #2b579a; border-radius:4px; font-size:12px;";
-                div.innerHTML = `<span style="color:#777; font-size:10px;">${log.time}</span><br>${log.msg}`;
+                div.innerHTML = `<span style="color:#777; font-size:10px;">${formatLogDateTime(log)}</span><br>${log.msg}`;
                 container.appendChild(div);
             });
         }
