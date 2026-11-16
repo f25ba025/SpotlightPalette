@@ -187,6 +187,7 @@
             } catch (e) {
                 console.error("データ取得エラー:", e);
             }
+            await loadRegistrationRequests();
         }
 
         // 🖼️ Supabase Storage を使用した背景画像のアップロード処理（既存画像削除機能付き）
@@ -279,11 +280,12 @@
             if (!page || !activeNav) return;
             page.classList.add('active');
             activeNav.classList.add('active');
-            document.getElementById('page-title').innerText = activeNav.innerText;
+            document.getElementById('page-title').innerText = (activeNav.firstChild ? activeNav.firstChild.textContent : activeNav.innerText).trim();
 
             if (pageId === 'dashboard') renderDashboard();
             if (pageId === 'factory') { renderTabs(); renderCanvas(); renderAreaListView(); }
             if (pageId === 'users') renderUsersTable();
+            if (pageId === 'requests') { renderRequestsPage(); loadRegistrationRequests(); }
             if (pageId === 'schedule') { renderScheduleTable(); loadRotationState().then(renderRotationPanel); }
             if (pageId === 'rank') renderRankingsAndLogs();
             if (pageId === 'logs') renderActivityLogs();
@@ -1107,6 +1109,115 @@
             }
         }
 
+        // ===== ユーザー登録申請（承認・却下） =====
+        var registrationRequests = [];
+
+        async function loadRegistrationRequests() {
+            if (!supabaseClient) return;
+            try {
+                const { data, error } = await supabaseClient
+                    .from('registration_requests')
+                    .select('*')
+                    .order('requested_at', { ascending: false });
+                if (error) throw error;
+                registrationRequests = data || [];
+            } catch (e) {
+                // テーブル未作成などでも、他の画面は動かし続ける
+                console.error("登録申請の取得エラー:", e);
+                registrationRequests = [];
+            }
+            updateRequestBadge();
+            const page = document.getElementById('p-pc-requests');
+            if (page && page.classList.contains('active')) renderRequestsPage();
+        }
+
+        function updateRequestBadge() {
+            const badge = document.getElementById('req-badge');
+            if (!badge) return;
+            const n = registrationRequests.filter(r => r.status === 'pending').length;
+            badge.textContent = n;
+            badge.style.display = n > 0 ? 'inline-block' : 'none';
+        }
+
+        function formatRequestDate(v) {
+            if (!v) return '-';
+            const d = new Date(v);
+            if (Number.isNaN(d.getTime())) return '-';
+            return d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+        }
+
+        function renderRequestsPage() {
+            const pendingBody = document.getElementById('req-pending-body');
+            const doneBody = document.getElementById('req-done-body');
+            if (!pendingBody || !doneBody) return;
+
+            const pending = registrationRequests.filter(r => r.status === 'pending')
+                .sort((x, y) => String(x.requested_at).localeCompare(String(y.requested_at)));
+            const done = registrationRequests.filter(r => r.status !== 'pending')
+                .sort((x, y) => String(y.reviewed_at || '').localeCompare(String(x.reviewed_at || '')))
+                .slice(0, 20);
+
+            pendingBody.innerHTML = pending.length ? pending.map(r => `
+                <tr>
+                    <td>${escapeHtml(formatRequestDate(r.requested_at))}</td>
+                    <td><strong>${escapeHtml(r.name)}</strong></td>
+                    <td>${escapeHtml(r.email)}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn" style="width:auto; padding:6px 12px; font-size:12px;" onclick="approveRequest(${Number(r.id)})">承認</button>
+                        <button class="btn btn-danger" style="width:auto; padding:6px 12px; font-size:12px;" onclick="rejectRequest(${Number(r.id)})">却下</button>
+                    </td>
+                </tr>`).join('')
+                : '<tr><td colspan="4" style="text-align:center; color:#999;">承認待ちの申請はありません。</td></tr>';
+
+            doneBody.innerHTML = done.length ? done.map(r => `
+                <tr>
+                    <td>${escapeHtml(formatRequestDate(r.reviewed_at))}</td>
+                    <td>${escapeHtml(r.name)}</td>
+                    <td>${escapeHtml(r.email)}</td>
+                    <td>${r.status === 'approved' ? '<span class="badge badge-worker">承認</span>' : '<span class="badge badge-admin">却下</span>'}</td>
+                    <td>${escapeHtml(r.reject_reason || '')}</td>
+                </tr>`).join('')
+                : '<tr><td colspan="5" style="text-align:center; color:#999;">処理済みの申請はありません。</td></tr>';
+        }
+
+        async function approveRequest(id) {
+            const r = registrationRequests.find(x => Number(x.id) === Number(id));
+            if (!r || !supabaseClient) return;
+            if (!confirm(`「${r.name}」（${r.email}）を作業者として登録します。よろしいですか？`)) return;
+            try {
+                const { error } = await supabaseClient.rpc('approve_registration_request', { p_request_id: id });
+                if (error) throw error;
+                await loadFromSupabase();   // users と申請一覧を再取得
+                renderUsersTable();
+                renderRankingsAndLogs();
+                renderScheduleTable();
+                renderRequestsPage();
+                alert("承認しました。ユーザーとして登録されました。");
+            } catch (err) {
+                console.error("承認エラー:", err);
+                alert("承認できませんでした。\n" + ((err && err.message) || err));
+                await loadRegistrationRequests();
+            }
+        }
+
+        async function rejectRequest(id) {
+            const r = registrationRequests.find(x => Number(x.id) === Number(id));
+            if (!r || !supabaseClient) return;
+            const reason = prompt(`「${r.name}」の申請を却下します。\n却下理由（任意・本人に表示されます）：`, '');
+            if (reason === null) return;   // キャンセル
+            try {
+                const { error } = await supabaseClient.rpc('reject_registration_request', { p_request_id: id, p_reason: reason });
+                if (error) throw error;
+                await loadFromSupabase();
+                renderRequestsPage();
+                alert("却下しました。");
+            } catch (err) {
+                console.error("却下エラー:", err);
+                alert("却下できませんでした。\n" + ((err && err.message) || err));
+                await loadRegistrationRequests();
+            }
+        }
+
         function renderUsersTable() {
             const tbody = document.getElementById('users-table-body');
             if (!tbody) return;
@@ -1718,6 +1829,7 @@
             <li class="pc-nav-item" id="t-pc-factory" onclick="switchPcPage('factory')">🏭 工場管理</li>
             <li class="pc-nav-item" id="t-pc-schedule" onclick="switchPcPage('schedule')">📅 清掃当番管理</li>
             <li class="pc-nav-item" id="t-pc-users" onclick="switchPcPage('users')">👥 ユーザー管理</li>
+            <li class="pc-nav-item" id="t-pc-requests" onclick="switchPcPage('requests')">📝 登録申請<span id="req-badge" style="display:none; margin-left:8px; background:#f59e0b; color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:bold;"></span></li>
             <li class="pc-nav-item" id="t-pc-rank" onclick="switchPcPage('rank')">🏆 ランキング</li>
             <li class="pc-nav-item" id="t-pc-logs" onclick="switchPcPage('logs')">📋 活動履歴</li>
             <li class="pc-nav-item" id="t-pc-setting" onclick="switchPcPage('setting')">⚙️ Google Chat通知設定</li>
@@ -1948,6 +2060,24 @@
             </div>
         </div>
 
+        <!-- 登録申請の承認・却下画面 -->
+        <div id="p-pc-requests" class="pc-content app-page">
+            <div class="card">
+                <h3 style="color:var(--primary); font-size:15px; margin-bottom:6px;">📝 承認待ちの登録申請</h3>
+                <p style="font-size:12px; color:#666; margin-bottom:12px;">承認すると、作業者（worker）として users に登録されます。管理者権限が必要な場合は、承認後に別途設定してください。</p>
+                <table class="ranking-table" style="border: 1px solid var(--border);">
+                    <thead><tr><th>申請日時</th><th>氏名</th><th>メールアドレス</th><th>操作</th></tr></thead>
+                    <tbody id="req-pending-body"></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h3 style="color:var(--primary); font-size:15px; margin-bottom:12px;">処理済みの申請（直近20件）</h3>
+                <table class="ranking-table" style="border: 1px solid var(--border);">
+                    <thead><tr><th>処理日時</th><th>氏名</th><th>メールアドレス</th><th>結果</th><th>却下理由</th></tr></thead>
+                    <tbody id="req-done-body"></tbody>
+                </table>
+            </div>
+        </div>
         <!-- 5. 通知設定画面 -->
         <div id="p-pc-setting" class="pc-content app-page">
             <div class="card" style="max-width:600px;">
