@@ -284,7 +284,7 @@
             if (pageId === 'dashboard') renderDashboard();
             if (pageId === 'factory') { renderTabs(); renderCanvas(); renderAreaListView(); }
             if (pageId === 'users') renderUsersTable();
-            if (pageId === 'schedule') renderScheduleTable();
+            if (pageId === 'schedule') { renderScheduleTable(); loadRotationState().then(renderRotationPanel); }
             if (pageId === 'rank') renderRankingsAndLogs();
             if (pageId === 'logs') renderActivityLogs();
         }
@@ -859,6 +859,254 @@
             });
         }
 
+        // ===== 🔀 ローテーション自動割り当て（全工場共通） =====
+        // 割り当て進行状況は rotation_assignments、清掃完了状況は areas.status で別管理。
+        const ROTATION_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+        const ROTATION_DAY_LABELS = { Mon: '月', Tue: '火', Wed: '水', Thu: '木', Fri: '金' };
+        let rotationState = { available: false, cycleNo: 1, usedUserIds: new Set(), loadError: '' };
+        let rotationPreview = null;
+
+        function shuffleArray(arr) {
+            const a = [...arr];
+            for (let i = a.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [a[i], a[j]] = [a[j], a[i]];
+            }
+            return a;
+        }
+
+        // 現在の巡回番号と、その巡回で割り当て済みの従業員を取得（テーブル未作成でも画面は壊さない）
+        async function loadRotationState() {
+            rotationState = { available: false, cycleNo: 1, usedUserIds: new Set(), loadError: '' };
+            if (!supabaseClient) return;
+            try {
+                const { data: latest, error } = await supabaseClient
+                    .from('rotation_assignments').select('cycle_no')
+                    .order('cycle_no', { ascending: false }).limit(1);
+                if (error) throw error;
+                rotationState.available = true;
+                if (latest && latest.length) {
+                    const cycleNo = latest[0].cycle_no;
+                    const { data: rows, error: rowsError } = await supabaseClient
+                        .from('rotation_assignments').select('user_id').eq('cycle_no', cycleNo);
+                    if (rowsError) throw rowsError;
+                    rotationState.cycleNo = cycleNo;
+                    (rows || []).forEach(r => rotationState.usedUserIds.add(r.user_id));
+                }
+            } catch (e) {
+                rotationState.available = false;
+                rotationState.loadError = (e && e.message) || String(e);
+                console.warn('ローテーション状態の取得に失敗:', e);
+            }
+        }
+
+        // 純粋関数：割り当て計画を作る（DOM・DBに触れない）
+        // opts: { scope:'all'|'factory', factoryId, mode:'overwrite'|'fill', includeAdmin }
+        function buildRotationPlan(data, state, opts) {
+            const factoryOrder = new Map((data.factories || []).map((f, i) => [f.id, i]));
+            const areas = (data.areas || [])
+                .filter(a => opts.scope === 'all' || a.factoryId === opts.factoryId)
+                .sort((a, b) =>
+                    (factoryOrder.get(a.factoryId) ?? 999) - (factoryOrder.get(b.factoryId) ?? 999) ||
+                    String(a.created_at || '').localeCompare(String(b.created_at || '')) ||
+                    String(a.id).localeCompare(String(b.id)));
+            if (!areas.length) return { error: '割り当て対象のエリアがありません。' };
+
+            const eligible = (data.users || []).filter(u => u.role === 'worker' || (opts.includeAdmin && u.role === 'admin'));
+            if (!eligible.length) return { error: '割り当て対象の従業員がいません。' };
+
+            const slots = [];
+            // 曜日ごとに全エリアを順に埋める（同じ曜日に同じ人が重複しにくくするため）
+            ROTATION_DAYS.forEach(day => areas.forEach(area => {
+                const before = data.schedules?.[area.id]?.[day] || '';
+                if (opts.mode === 'fill' && before) return;
+                slots.push({ areaId: area.id, day, before });
+            }));
+            if (!slots.length) return { error: '割り当て可能な未設定のコマがありません。' };
+
+            // 同じ曜日に別エリアで重複しないよう、変更されない既存設定を先に登録（できる範囲の優先ルール）
+            const slotKeys = new Set(slots.map(s => s.areaId + '|' + s.day));
+            const dayUsed = {};
+            ROTATION_DAYS.forEach(d => { dayUsed[d] = new Set(); });
+            Object.entries(data.schedules || {}).forEach(([areaId, row]) => {
+                ROTATION_DAYS.forEach(d => { if (row[d] && !slotKeys.has(areaId + '|' + d)) dayUsed[d].add(row[d]); });
+            });
+
+            const eligibleIds = new Set(eligible.map(u => u.id));
+            let cycleNo = state.cycleNo;
+            let orderNo = state.usedUserIds.size;
+            let queue = shuffleArray(eligible.filter(u => !state.usedUserIds.has(u.id)));
+            const startCycle = cycleNo;
+            const startRemaining = queue.length;
+            const advance = () => { cycleNo++; orderNo = 0; queue = shuffleArray(eligible); };
+            if (!queue.length) advance();   // 現在の巡回が全員分完了済み → 清掃完了状況に関係なく次の巡回へ
+
+            slots.forEach(slot => {
+                if (!queue.length) advance();
+                let idx = queue.findIndex(u => !dayUsed[slot.day].has(u.id));
+                if (idx < 0) idx = 0;
+                const user = queue.splice(idx, 1)[0];
+                dayUsed[slot.day].add(user.id);
+                orderNo++;
+                slot.userId = user.id; slot.cycleNo = cycleNo; slot.orderNo = orderNo;
+            });
+
+            return {
+                slots, areas, mode: opts.mode, scope: opts.scope, factoryId: opts.factoryId,
+                startCycle, endCycle: cycleNo, startRemaining, endRemaining: queue.length,
+                eligibleCount: eligible.length, ignoredUsed: [...state.usedUserIds].filter(id => !eligibleIds.has(id)).length
+            };
+        }
+
+        function getRotationOptions() {
+            const scope = (document.querySelector('input[name="rot-scope"]:checked') || {}).value || 'all';
+            const mode = (document.querySelector('input[name="rot-mode"]:checked') || {}).value || 'fill';
+            return {
+                scope, mode,
+                factoryId: document.getElementById('rot-factory-select').value,
+                includeAdmin: document.getElementById('rot-include-admin').checked
+            };
+        }
+
+        function onRotationOptionChange() {
+            rotationPreview = null;
+            renderRotationPanel();
+        }
+
+        function renderRotationPanel() {
+            const statusBox = document.getElementById('rotation-status');
+            if (!statusBox) return;
+            const select = document.getElementById('rot-factory-select');
+            const prev = select.value;
+            select.innerHTML = (appData.factories || []).map(f => `<option value="${escapeHtml(f.id)}">${escapeHtml(f.name)}</option>`).join('');
+            if ((appData.factories || []).some(f => f.id === prev)) select.value = prev;
+            const opts = getRotationOptions();
+            select.disabled = opts.scope !== 'factory';
+
+            const previewBtn = document.getElementById('rot-preview-btn');
+            if (!rotationState.available) {
+                statusBox.className = 'rot-status rot-warn';
+                statusBox.innerHTML = '⚠️ ローテーション用テーブル（rotation_assignments）を利用できません。rotation_setup.sql をSupabaseに適用してください。'
+                    + (rotationState.loadError ? `<br><small>${escapeHtml(rotationState.loadError)}</small>` : '');
+                previewBtn.disabled = true;
+                document.getElementById('rotation-preview').innerHTML = '';
+                return;
+            }
+            previewBtn.disabled = false;
+            const eligible = (appData.users || []).filter(u => u.role === 'worker' || (opts.includeAdmin && u.role === 'admin'));
+            const usedEligible = eligible.filter(u => rotationState.usedUserIds.has(u.id)).length;
+            statusBox.className = 'rot-status';
+            statusBox.innerHTML = `現在の巡回：<strong>第${rotationState.cycleNo}巡</strong>　割り当て済み <strong>${usedEligible}</strong> / 対象 <strong>${eligible.length}</strong> 人（残り ${Math.max(eligible.length - usedEligible, 0)} 人）`
+                + '<br><small>※ 巡回の進行は清掃完了状況とは無関係に、割り当ての確定時のみ進みます。</small>';
+            renderRotationPreview();
+        }
+
+        function createRotationPreview() {
+            if (!rotationState.available) return;
+            const plan = buildRotationPlan(appData, rotationState, getRotationOptions());
+            if (plan.error) {
+                rotationPreview = null;
+                renderRotationPanel();
+                alert(plan.error);
+                return;
+            }
+            rotationPreview = plan;
+            renderRotationPanel();
+        }
+
+        function discardRotationPreview() {
+            rotationPreview = null;
+            renderRotationPanel();
+        }
+
+        function renderRotationPreview() {
+            const box = document.getElementById('rotation-preview');
+            const p = rotationPreview;
+            if (!p) { box.innerHTML = ''; return; }
+            const userName = id => (appData.users.find(u => u.id === id) || {}).name || id;
+            const bySlot = new Map(p.slots.map(s => [s.areaId + '|' + s.day, s]));
+            const changed = p.slots.filter(s => s.before !== s.userId).length;
+            const overwritten = p.slots.filter(s => s.before && s.before !== s.userId).length;
+            const cycleText = p.endCycle > p.startCycle
+                ? `第${p.startCycle}巡 → 第${p.endCycle}巡へ進みます（第${p.endCycle}巡の残り ${p.endRemaining} 人）`
+                : `第${p.startCycle}巡の途中（保存後の残り ${p.endRemaining} 人）`;
+
+            const rows = p.areas.map(area => {
+                const fac = (appData.factories || []).find(f => f.id === area.factoryId);
+                const cells = ROTATION_DAYS.map(day => {
+                    const s = bySlot.get(area.id + '|' + day);
+                    const current = appData.schedules?.[area.id]?.[day] || '';
+                    if (!s) return `<td class="rot-keep">${current ? escapeHtml(userName(current)) : '<span class="rot-empty">-</span>'}</td>`;
+                    const oldHtml = (s.before && s.before !== s.userId) ? `<div class="rot-old">${escapeHtml(userName(s.before))}</div>` : '';
+                    const cls = s.before === s.userId ? '' : (s.before ? 'rot-over' : 'rot-new');
+                    return `<td class="${cls}">${oldHtml}<strong>${escapeHtml(userName(s.userId))}</strong> <span class="rot-cycle">巡${s.cycleNo}</span></td>`;
+                }).join('');
+                return `<tr><td><strong>${escapeHtml(area.name)}</strong> <span style="font-size:11px;color:#777;">(${escapeHtml(fac ? fac.name : '?')})</span></td>${cells}</tr>`;
+            }).join('');
+
+            box.innerHTML = `
+                <div class="rot-summary">
+                    <strong>プレビュー（まだ保存されていません）</strong><br>
+                    割り当て ${p.slots.length} コマ（うち変更 ${changed} 件 / 既存設定の上書き ${overwritten} 件）<br>
+                    ${escapeHtml(cycleText)}
+                </div>
+                <div class="rot-table-wrap">
+                    <table class="ranking-table" style="border:1px solid var(--border);">
+                        <thead><tr><th>エリア</th>${ROTATION_DAYS.map(d => `<th>${ROTATION_DAY_LABELS[d]}</th>`).join('')}</tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+                <div class="rot-buttons">
+                    <button class="btn" id="rot-confirm-btn" style="background:var(--success);" onclick="confirmRotationPlan()">✅ この内容で確定して保存</button>
+                    <button class="btn btn-secondary" onclick="createRotationPreview()">🎲 並べ直す</button>
+                    <button class="btn btn-secondary" onclick="discardRotationPreview()">破棄</button>
+                </div>`;
+        }
+
+        async function confirmRotationPlan() {
+            const p = rotationPreview;
+            if (!p || !supabaseClient) return;
+
+            // プレビュー作成後に当番が手動変更されていたら保存しない
+            const stale = p.slots.some(s => (appData.schedules?.[s.areaId]?.[s.day] || '') !== s.before);
+            if (stale) {
+                rotationPreview = null;
+                renderRotationPanel();
+                alert('プレビュー作成後に当番設定が変更されました。もう一度プレビューを作成してください。');
+                return;
+            }
+
+            const overwritten = p.slots.filter(s => s.before && s.before !== s.userId).length;
+            let msg = `${p.slots.length} コマの清掃当番を保存します。`;
+            if (p.mode === 'overwrite') msg += `\n既存設定のうち ${overwritten} 件が上書きされます。`;
+            msg += '\nよろしいですか？';
+            if (!confirm(msg)) return;
+
+            const btn = document.getElementById('rot-confirm-btn');
+            if (btn) { btn.disabled = true; btn.innerText = '保存中...'; }
+            try {
+                const payload = p.slots.map(s => ({
+                    area_id: s.areaId, day: s.day.toLowerCase(), user_id: s.userId, cycle_no: s.cycleNo, order_no: s.orderNo
+                }));
+                const { data, error } = await supabaseClient.rpc('apply_rotation_assignments', {
+                    p_assignments: payload, p_overwrite: p.mode === 'overwrite'
+                });
+                if (error) throw error;
+
+                rotationPreview = null;
+                await loadFromSupabase();
+                await loadRotationState();
+                renderScheduleTable();
+                renderDashboard();
+                renderRotationPanel();
+                alert(`保存しました（反映 ${data?.applied ?? '?'} 件 / スキップ ${data?.skipped ?? 0} 件）。`);
+            } catch (err) {
+                console.error('ローテーション保存エラー:', err);
+                alert('保存できませんでした。変更は反映されていません。\n' + ((err && err.message) || err));
+                if (btn) { btn.disabled = false; btn.innerText = '✅ この内容で確定して保存'; }
+            }
+        }
+
         function renderUsersTable() {
             const tbody = document.getElementById('users-table-body');
             if (!tbody) return;
@@ -1386,6 +1634,25 @@
             .canvas-wrapper { height:280px; }
         }
 
+        /* ローテーション自動割り当て */
+        .rot-status { background: var(--primary-light); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+        .rot-status.rot-warn { background: var(--warning-light); color: var(--warning); }
+        .rot-options { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+        .rot-group { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px 10px; font-size: 13px; min-width: 200px; flex: 1 1 200px; }
+        .rot-group legend { font-size: 12px; font-weight: bold; color: var(--primary); padding: 0 4px; }
+        .rot-group label { display: block; margin: 4px 0; cursor: pointer; }
+        .rot-group select { margin-top: 6px; }
+        .rot-summary { margin: 14px 0 8px; font-size: 13px; background: var(--success-light); border-radius: 6px; padding: 10px 12px; }
+        .rot-table-wrap { overflow-x: auto; }
+        .rot-table-wrap td { font-size: 12px; white-space: nowrap; }
+        .rot-new { background: var(--success-light); }
+        .rot-over { background: var(--warning-light); }
+        .rot-old { font-size: 11px; color: #999; text-decoration: line-through; }
+        .rot-cycle { font-size: 10px; color: #777; }
+        .rot-keep, .rot-empty { color: #999; }
+        .rot-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .rot-buttons .btn { width: auto; }
+
         .app-page {
             display: none;
         }
@@ -1617,6 +1884,32 @@
 
         <!-- 3. スケジュール画面 -->
         <div id="p-pc-schedule" class="pc-content app-page">
+            <div class="card" id="rotation-card">
+                <h3 style="margin-bottom:10px; color:var(--primary); font-size:15px;">🔀 ローテーション自動割り当て（全工場共通）</h3>
+                <p style="font-size:12px; color:#666; margin-bottom:12px;">従業員をランダムな順番に並べ、1巡回中は各従業員を1回ずつ割り当てます。結果はプレビューで確認し、確定してから保存されます。</p>
+                <div id="rotation-status" class="rot-status"></div>
+                <div class="rot-options">
+                    <fieldset class="rot-group">
+                        <legend>割り当て対象</legend>
+                        <label><input type="radio" name="rot-scope" value="all" checked onchange="onRotationOptionChange()"> 全工場</label>
+                        <label><input type="radio" name="rot-scope" value="factory" onchange="onRotationOptionChange()"> 工場を指定</label>
+                        <select id="rot-factory-select" class="form-control" onchange="onRotationOptionChange()"></select>
+                    </fieldset>
+                    <fieldset class="rot-group">
+                        <legend>既存設定の扱い</legend>
+                        <label><input type="radio" name="rot-mode" value="fill" checked onchange="onRotationOptionChange()"> 未設定エリアのみ割り当て</label>
+                        <label><input type="radio" name="rot-mode" value="overwrite" onchange="onRotationOptionChange()"> すべて上書き</label>
+                    </fieldset>
+                    <fieldset class="rot-group">
+                        <legend>対象従業員</legend>
+                        <label>作業者（worker）を対象にする（固定）</label>
+                        <label><input type="checkbox" id="rot-include-admin" onchange="onRotationOptionChange()"> 管理者（admin）も対象に含める</label>
+                    </fieldset>
+                </div>
+                <button class="btn" id="rot-preview-btn" style="width:auto;" onclick="createRotationPreview()">👀 プレビューを作成</button>
+                <div id="rotation-preview"></div>
+            </div>
+
             <div class="card">
                 <h3 style="margin-bottom:15px; color:var(--primary); font-size:15px;">📅 エリア別・曜日別掃除当番設定マスター</h3>
                 <table class="ranking-table" style="border: 1px solid var(--border);">
