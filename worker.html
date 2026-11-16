@@ -50,15 +50,23 @@
                     .eq('email', googleEmail)
                     .maybeSingle();
 
+                if (userError) {
+                    // 通信・権限エラー時に、登録済みユーザーを未登録扱いしないよう中断する
+                    console.error("ユーザー照会エラー:", userError);
+                    alert("ユーザー情報の取得に失敗しました。時間をおいて再度お試しください。");
+                    document.getElementById('login-overlay').style.display = 'flex';
+                    return;
+                }
+
                 if (userData) {
                     // 登録されているユーザーであればログイン成功！
                     currentUser = userData;
                     document.getElementById('login-overlay').style.display = 'none';
+                    document.getElementById('register-overlay').style.display = 'none';
                 } else {
-                    // データベースに登録されていないメールアドレスの場合
-                    alert("このGoogleアカウント（" + googleEmail + "）はシステムに登録されていません。");
-                    await supabaseClient.auth.signOut(); // ログアウトさせる
-                    document.getElementById('login-overlay').style.display = 'flex';
+                    // 未登録のGoogleアカウント → 登録申請画面へ（承認までは機能を利用できない）
+                    document.getElementById('login-overlay').style.display = 'none';
+                    await showRegistrationFlow(session.user);
                     return;
                 }
             } else {
@@ -173,6 +181,101 @@
                 renderCanvas();
                 openModal(targetArea);
             }
+        }
+
+        // ===== ユーザー登録申請 =====
+        function getGoogleDisplayName(user) {
+            const meta = (user && user.user_metadata) || {};
+            return (meta.full_name || meta.name || '').trim();
+        }
+
+        function showRegisterPanel(panel) {
+            ['form', 'pending'].forEach(p => {
+                document.getElementById('reg-panel-' + p).style.display = (p === panel) ? 'block' : 'none';
+            });
+        }
+
+        async function showRegistrationFlow(user) {
+            const email = (user.email || '').toLowerCase();
+            const overlay = document.getElementById('register-overlay');
+            overlay.style.display = 'flex';
+
+            document.getElementById('reg-email').value = email;           // 編集不可（readonly）
+            document.getElementById('reg-error').style.display = 'none';
+            document.getElementById('reg-rejected').style.display = 'none';
+
+            // 初期表示の氏名はGoogleアカウントの名前（編集可）
+            document.getElementById('reg-name').value = getGoogleDisplayName(user);
+            showRegisterPanel('form');
+
+            // 自分の申請状況を確認（RLSにより自分の申請のみ取得可能）
+            const { data: req, error } = await supabaseClient
+                .from('registration_requests')
+                .select('name, status, reject_reason')
+                .eq('email', email)
+                .maybeSingle();
+
+            if (error) {
+                console.error("申請状況の取得エラー:", error);
+                showRegError("申請状況の取得に失敗しました。時間をおいて再度お試しください。");
+                return;
+            }
+
+            if (req && req.status === 'pending') {
+                document.getElementById('reg-pending-name').textContent = req.name;
+                showRegisterPanel('pending');
+            } else if (req && req.status === 'rejected') {
+                // 却下された場合は理由を表示し、再申請できる
+                document.getElementById('reg-name').value = req.name || getGoogleDisplayName(user);
+                const box = document.getElementById('reg-rejected');
+                box.textContent = '前回の申請は承認されませんでした。' + (req.reject_reason ? '（理由：' + req.reject_reason + '）' : '') + ' 内容を確認して再度申請してください。';
+                box.style.display = 'block';
+            }
+        }
+
+        function showRegError(msg) {
+            const el = document.getElementById('reg-error');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        async function submitRegistration() {
+            const name = document.getElementById('reg-name').value.trim();
+            if (!name) { showRegError("氏名を入力してください。"); return; }
+            if (name.length > 50) { showRegError("氏名は50文字以内で入力してください。"); return; }
+
+            const btn = document.getElementById('reg-submit-btn');
+            btn.disabled = true;
+            btn.innerText = "送信中...";
+            document.getElementById('reg-error').style.display = 'none';
+
+            try {
+                // メールアドレスはサーバー側がログイン情報から判定する（クライアントからは送らない）
+                const { error } = await supabaseClient.rpc('submit_registration_request', { p_name: name });
+                if (error) {
+                    if ((error.message || '').includes('already registered')) {
+                        await init();   // すでに登録済み → 通常のログイン処理へ
+                        return;
+                    }
+                    throw error;
+                }
+                document.getElementById('reg-pending-name').textContent = name;
+                document.getElementById('reg-rejected').style.display = 'none';
+                showRegisterPanel('pending');
+            } catch (err) {
+                console.error("登録申請エラー:", err);
+                showRegError("申請に失敗しました: " + ((err && err.message) || err));
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "登録を申請する";
+            }
+        }
+
+        async function handleRegisterLogout() {
+            await supabaseClient.auth.signOut();
+            currentUser = null;
+            document.getElementById('register-overlay').style.display = 'none';
+            document.getElementById('login-overlay').style.display = 'flex';
         }
 
         function handleLogout() {
@@ -1003,6 +1106,10 @@
             padding: 24px;
         }
 
+        #register-overlay>div {
+            width: min(420px, 100%) !important;
+        }
+
         #login-overlay>div {
             width: min(420px, 100%) !important;
         }
@@ -1198,6 +1305,47 @@
                     </button>
                     <p id="login-error-msg"
                         style="color:red; font-size:11px; margin-top:10px; text-align:center; display:none;"></p>
+                </div>
+            </div>
+
+
+            <!-- 登録申請画面（Googleログイン済み・未登録の場合のみ表示） -->
+            <div id="register-overlay" class="login-overlay" style="display:none;">
+                <div class="card" style="text-align:left;">
+                    <h3 style="color:var(--primary); margin-bottom:10px; text-align:center;">ユーザー登録の申請</h3>
+
+                    <div id="reg-panel-form">
+                        <p style="font-size:13px; color:#666; margin-bottom:16px; text-align:center;">
+                            このアカウントは未登録です。内容を確認して申請してください。<br>管理者の承認後に利用できます。</p>
+
+                        <div id="reg-rejected"
+                            style="display:none; background:#fdecea; color:#a12622; padding:10px; border-radius:6px; font-size:12px; margin-bottom:12px;">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="reg-name">氏名（修正できます）</label>
+                            <input type="text" id="reg-name" class="form-control" maxlength="50" autocomplete="name">
+                        </div>
+                        <div class="form-group">
+                            <label for="reg-email">メールアドレス（Googleアカウント・変更不可）</label>
+                            <input type="email" id="reg-email" class="form-control" readonly
+                                style="background:#f1f3f4; color:#555;">
+                        </div>
+
+                        <p id="reg-error" style="color:red; font-size:12px; margin-bottom:6px; display:none;"></p>
+                        <button class="btn" id="reg-submit-btn" onclick="submitRegistration()">登録を申請する</button>
+                    </div>
+
+                    <div id="reg-panel-pending" style="display:none; text-align:center;">
+                        <p style="font-size:34px; margin-bottom:6px;">⏳</p>
+                        <p style="font-weight:bold; margin-bottom:8px;">承認待ちです</p>
+                        <p style="font-size:13px; color:#666; margin-bottom:6px;">
+                            <span id="reg-pending-name"></span> さんの申請を受け付けました。</p>
+                        <p style="font-size:12px; color:#666;">管理者が承認すると利用できるようになります。</p>
+                        <button class="btn" onclick="init()">承認状況を再確認する</button>
+                    </div>
+
+                    <button class="btn btn-secondary" onclick="handleRegisterLogout()">ログアウト</button>
                 </div>
             </div>
 
